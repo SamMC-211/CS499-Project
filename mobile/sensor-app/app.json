@@ -9,9 +9,13 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to access your camera"
+      }
     },
     "android": {
+      "minSdkVersion": 26,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -19,7 +23,12 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.CAMERA"
+      ],
+      "package": "com.anonymous.sensorapp"
     },
     "web": {
       "output": "static",
@@ -38,7 +47,14 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Allow $(PRODUCT_NAME) to access your camera"
+        }
+      ],
+      "react-native-fast-tflite"
     ],
     "experiments": {
       "typedRoutes": true,

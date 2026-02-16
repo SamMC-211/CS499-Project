@@ -27,16 +27,17 @@ https://docs.expo.dev/versions/latest/sdk/accelerometer/
 - .../CS499-Project/mobile/sensor-app (main)
     - $ py -3.12 --version
     - Python 3.12.10
-    - $ py -3.12 -m venv venv
+    - $ py -3.12 -m venv venv(can be whatever you want to name env)
     - *Activate on Linux*
         - source venv/bin/activate
 - **From venv** 
     - python
     - import mediapipe as mp
     - print(mp.__version__)
+- **To Activate Python (venv)??**
+    - source venv/Scripts/activate
 
 # Week 3 Meeting Notes
----
 - Available MediaPipe facial detection models
     - https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector#models
     - Short-Range Blazeface
@@ -58,7 +59,8 @@ https://docs.expo.dev/versions/latest/sdk/accelerometer/
 - Model Training
     - Python 3.12
         - numpy
-    - MediaPipe 0.10.32
+        Mat plotlib
+    - MediaPipe 0.10.32 > 0.10.14 (For mp.solutions)
     - TensorFlow (Training -> TFLite for Local running)
     - OpenCV-Python (Useful for reading video and images to train model)
 
@@ -77,3 +79,42 @@ https://docs.expo.dev/versions/latest/sdk/accelerometer/
 - [Drowsy Detection](https://www.kaggle.com/datasets/yasharjebraeily/drowsy-detection-dataset) (Greyscale face images)
 - [Drowsiness Detection System](https://www.kaggle.com/code/mohamedkhaledelsafty/drowsiness-detection-system/n) (Python processing imports given, Colored full face)
 - [Driver drowsiness using keras](https://www.kaggle.com/code/adinishad/driver-drowsiness-using-keras/notebook) (Eyes closed/Yawn)
+
+
+# Week 4 Meeting Notes
+
+This week I spent some time attempting to get a model created using the example code and training data from [Drowsiness Detection System](https://www.kaggle.com/code/mohamedkhaledelsafty/drowsiness-detection-system/n). It took me a while and some adjustments were made as I went. 
+- Adapted example code into python files for each step of the model creation
+- Refactored MediaPipe code to use version 0.10.32 instead of 0.8.11 which is what the project used. (This was due to a dependency conflict between TensorFlow and MediaPipe) 
+    - Instead of MediaPipe.Solutions I am now using MediaPipe.tasks, solutions was outdated
+    - model_training/input/ includes "face_landmarker.task"
+- Eliminated some redundant code that was drawing eye landmarks on unsaved image copies
+- Ran Preprocessing, Training, and Export processes on my computer 
+    - Outputs (in /mobile/sensor-app/model_training/artifacts/): 
+        - drowsiness_cnn.keras
+        - drowsiness_cnn.tflite
+        - labels.json
+        - metrics.json
+
+
+
+Additionally there were some changes to the tech stack as I progressed within the project
+
+
+
+**Current Tech Stack**
+- Frontend/Mobile
+    - Expo - React Native
+        - Expo-Accelerometer
+        - `React-native-vision-camera` (camera + frame processors)
+        - `Vision-camera-resize-plugin` (fast frame resize + tensor input formatting)
+- Local Model Processing
+    - `React-native-fast-tflite` (native TFLite runtime)
+    - Mediapipe/tasks-vision
+- Model Training
+    - Python 3.12
+    - numpy 2.4.2
+    - MediaPipe 0.10.32
+        - `Tasks Face Landmarker`
+    - TensorFlow 2.20.0
+    - OpenCV-Python 4.13.0.92
