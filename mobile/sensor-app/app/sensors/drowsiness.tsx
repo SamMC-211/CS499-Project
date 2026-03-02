@@ -50,9 +50,12 @@ function stampDot(input: Float32Array, x: number, y: number, radius: number, siz
     for (let yy = minY; yy <= maxY; yy++) {
         for (let xx = minX; xx <= maxX; xx++) {
             const offset = (yy * size + xx) * 3; // 3 channels: RGB
-            input[offset] = 1.0; // R
-            input[offset + 1] = 1.0; // G
-            input[offset + 2] = 1.0; // B
+            input[offset] = 255.0; // R
+            input[offset + 1] = 255.0; // G
+            input[offset + 2] = 255.0; // B
+            // input[offset] = 1.0; // R
+            // input[offset + 1] = 1.0; // G
+            // input[offset + 2] = 1.0; // B
         }
     }
 }
@@ -281,7 +284,7 @@ export default function DrowsinessScreen() {
             // const outputs = model.runSync([]) as unknown[];
             const out0 = outputs?.[0] as number[] | undefined; //
             const score = Number(out0?.[0] ?? 0);
-            const classIndex = score >= 0.5 ? 1 : 0;
+            const classIndex = score >= 0.16 ? 1 : 0;
             const label = CLASS_NAMES[classIndex] ?? 'Unknown';
 
             updatePredictionOnJs({ label, score, hasFace: true });
