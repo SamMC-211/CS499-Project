@@ -1,6 +1,7 @@
 import { Text, View, Pressable } from 'react-native';
 import { Link, router } from 'expo-router';
 import NavButton from '@/components/Nav_Button';
+import Svg, { Circle } from 'react-native-svg';
 
 export default function Index() {
     return (
@@ -22,6 +23,7 @@ export default function Index() {
 
             <NavButton label='Camera' href='/sensors/camera' />
             <NavButton label='Accelerometer' href='/sensors/accelerometer' />
+            <NavButton label='FaceDetection' href='/sensors/drowsiness' />
         </View>
     );
 }

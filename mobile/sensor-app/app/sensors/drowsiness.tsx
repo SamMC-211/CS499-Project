@@ -1,278 +1,411 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import { useTensorflowModel } from 'react-native-fast-tflite';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View, Dimensions, useWindowDimensions } from 'react-native';
+import { loadTensorflowModel, useTensorflowModel } from 'react-native-fast-tflite';
 import { Camera, useCameraDevice, useCameraPermission, useFrameProcessor } from 'react-native-vision-camera';
-import { Face, useFaceDetector } from 'react-native-vision-camera-face-detector';
 import { useResizePlugin } from 'vision-camera-resize-plugin';
 import { Worklets } from 'react-native-worklets-core';
+import { Face, useFaceDetector } from 'react-native-vision-camera-face-detector';
+import Svg, { Circle } from 'react-native-svg';
+import { scheduleOnRN } from 'react-native-worklets';
+// const model = await loadTensorflowModel(require('../../assets/ml/drowsines_cnn.tflite'));
 
-const MODEL_INPUT_SIZE = 145;
-const LANDMARK_DOT_RADIUS = 2;
-const PROCESS_EVERY_N_FRAMES = 3;
+// DEBUG
+import { Directory, File, Paths } from 'expo-file-system';
 
 type UiPrediction = {
-  label: string;
-  score: number;
-  hasFace: boolean;
+    label: string;
+    score: number;
+    hasFace: boolean;
 };
+const PROCESS_EVERY_N_FRAMES = 5;
+const MODEL_INPUT_SIZE = 145;
+const LANDMARK_DOT_RADIUS = 0;
+const CLASS_NAMES = ['Fatigue Subjects', 'Active Subjects'];
 
-function clamp(v: number, min: number, max: number): number {
-  'worklet';
-  return Math.max(min, Math.min(max, v));
+// DEBUG
+const DEBUG_SAVE_EVERY_N = 60; // save 1 every 60 processed frames
+
+// //Map landmark points to cropped image
+function mapLandmarkToCrop(px: number, py: number, bx: number, by: number, bw: number, bh: number) {
+    'worklet';
+
+    // px/py and bx/by/bw/bh must already be in the same rotated frame space.
+    const x = ((px - bx) / bw) * (MODEL_INPUT_SIZE - 1);
+    const y = ((py - by) / bh) * (MODEL_INPUT_SIZE - 1);
+
+    const cx = Math.max(0, Math.min(MODEL_INPUT_SIZE - 1, Math.round(x)));
+    const cy = Math.max(0, Math.min(MODEL_INPUT_SIZE - 1, Math.round(y)));
+    return { x: cx, y: cy };
 }
 
-function stampDot(
-  input: Float32Array,
-  x: number,
-  y: number,
-  radius: number,
-  size: number
-): void {
-  'worklet';
-  const minY = clamp(y - radius, 0, size - 1);
-  const maxY = clamp(y + radius, 0, size - 1);
-  const minX = clamp(x - radius, 0, size - 1);
-  const maxX = clamp(x + radius, 0, size - 1);
+//Draw dot at landmark position
+function stampDot(input: Float32Array, x: number, y: number, radius: number, size: number) {
+    'worklet'; // needed if inside frame processor
 
-  for (let yy = minY; yy <= maxY; yy++) {
-    for (let xx = minX; xx <= maxX; xx++) {
-      const offset = (yy * size + xx) * 3;
-      input[offset] = 1.0;
-      input[offset + 1] = 1.0;
-      input[offset + 2] = 1.0;
+    const minY = Math.max(y - radius, 0);
+    const maxY = Math.min(y + radius, size - 1);
+    const minX = Math.max(x - radius, 0);
+    const maxX = Math.min(x + radius, size - 1);
+
+    for (let yy = minY; yy <= maxY; yy++) {
+        for (let xx = minX; xx <= maxX; xx++) {
+            const offset = (yy * size + xx) * 3; // 3 channels: RGB
+            input[offset] = 1.0; // R
+            input[offset + 1] = 1.0; // G
+            input[offset + 2] = 1.0; // B
+        }
     }
-  }
 }
 
 export default function DrowsinessScreen() {
-  const { hasPermission, requestPermission } = useCameraPermission();
-  const device = useCameraDevice('front');
-  const modelPlugin = useTensorflowModel(
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require('../../assets/ml/drowsiness_cnn.tflite')
-  );
-  const { model, state: modelState } = modelPlugin;
-  const { resize } = useResizePlugin();
+    const frameCounter = useMemo(() => Worklets.createSharedValue(0), []); //shared value across frames
+    const [landmarks, setLandmarks] = useState<{ x: number; y: number }[]>([]); //points from face detector
+    const [overlaySize, setOverlaySize] = useState({ width: 0, height: 0 }); //View dimensions
 
-  const { detectFaces, stopListeners } = useFaceDetector({
-    performanceMode: 'fast',
-    landmarkMode: 'all',
-    contourMode: 'all',
-    classificationMode: 'none',
-    minFaceSize: 0.15,
-    trackingEnabled: false,
-    cameraFacing: 'front',
-    autoMode: false,
-  });
+    const modelPlugin = useTensorflowModel(require('../../assets/ml/drowsiness_cnn.tflite'));
+    const model = modelPlugin.state === 'loaded' ? modelPlugin.model : undefined; //Only run inference when state is loaded
 
-  const [prediction, setPrediction] = useState<UiPrediction>({
-    label: 'Initializing...',
-    score: 0,
-    hasFace: false,
-  });
+    const [prediction, setPrediction] = useState<UiPrediction>({ label: 'Initializing...', score: 0, hasFace: false });
 
-  useEffect(() => {
-    if (!hasPermission) {
-      requestPermission();
-    }
-  }, [hasPermission, requestPermission]);
+    const { hasPermission, requestPermission } = useCameraPermission();
+    const device = useCameraDevice('front');
+    const { resize } = useResizePlugin(); //function for resizing vision frame
 
-  useEffect(() => {
-    return () => {
-      stopListeners();
-    };
-  }, [stopListeners]);
+    //Declare/define face detector
+    const { detectFaces } = useFaceDetector({
+        performanceMode: 'fast', // can be 'accurate' for better detection
+        landmarkMode: 'all', // we need landmarks
+        contourMode: 'all', // optional, if using full face mesh
+        classificationMode: 'none',
+        minFaceSize: 0.15, // ignore tiny faces
+        trackingEnabled: false,
+        // windowHeight:
+        // windowWidth:
+    });
 
-  const updatePredictionOnJs = useMemo(
-    () =>
-      Worklets.createRunOnJS((next: UiPrediction) => {
-        setPrediction(next);
-      }),
-    []
-  );
-
-  const frameCounter = useMemo(() => Worklets.createSharedValue(0), []);
-
-  const frameProcessor = useFrameProcessor(
-    (frame) => {
-      'worklet';
-
-      if (model == null) return;
-
-      frameCounter.value += 1;
-      if (frameCounter.value % PROCESS_EVERY_N_FRAMES !== 0) {
-        return;
-      }
-
-      const faces = detectFaces(frame) as Face[];
-      if (faces.length === 0) {
-        updatePredictionOnJs({ label: 'No Face', score: 0, hasFace: false });
-        return;
-      }
-
-      const face = faces[0];
-      const bx = clamp(face.bounds.x, 0, frame.width - 1);
-      const by = clamp(face.bounds.y, 0, frame.height - 1);
-      const bw = clamp(face.bounds.width, 1, frame.width - bx);
-      const bh = clamp(face.bounds.height, 1, frame.height - by);
-
-      const input = resize(frame, {
-        crop: {
-          x: bx,
-          y: by,
-          width: bw,
-          height: bh,
-        },
-        scale: {
-          width: MODEL_INPUT_SIZE,
-          height: MODEL_INPUT_SIZE,
-        },
-        pixelFormat: 'rgb',
-        dataType: 'float32',
-      });
-
-      // Stamp detected facial landmarks onto the cropped tensor to match the training
-      // pattern where landmark points are drawn on the face crop.
-      const landmarks = face.landmarks;
-      if (landmarks) {
-        const points = [
-          landmarks.LEFT_EYE,
-          landmarks.RIGHT_EYE,
-          landmarks.NOSE_BASE,
-          landmarks.MOUTH_LEFT,
-          landmarks.MOUTH_RIGHT,
-          landmarks.MOUTH_BOTTOM,
-          landmarks.LEFT_CHEEK,
-          landmarks.RIGHT_CHEEK,
-          landmarks.LEFT_EAR,
-          landmarks.RIGHT_EAR,
-        ];
-
-        for (const p of points) {
-          if (!p) continue;
-          const lx = ((p.x - bx) / bw) * MODEL_INPUT_SIZE;
-          const ly = ((p.y - by) / bh) * MODEL_INPUT_SIZE;
-          const px = clamp(Math.round(lx), 0, MODEL_INPUT_SIZE - 1);
-          const py = clamp(Math.round(ly), 0, MODEL_INPUT_SIZE - 1);
-          stampDot(input, px, py, LANDMARK_DOT_RADIUS, MODEL_INPUT_SIZE);
+    // If hasPermission is False, requestPermission
+    useEffect(() => {
+        if (!hasPermission) {
+            requestPermission();
         }
-      }
+    }, [hasPermission, requestPermission]);
 
-      const outputs = model.runSync([input]);
-      const score = Number(outputs[0][0] ?? 0);
+    //use instead of scheduleOnRN
+    const updateLandmarks = Worklets.createRunOnJS((points: { x: number; y: number }[]) => {
+        setLandmarks(points);
+        // console.log(points);
+    });
 
-      // Current class mapping in training:
-      // 0 = Fatigue Subjects, 1 = Active Subjects
-      const label = score >= 0.5 ? 'Active Subjects' : 'Fatigue Subjects';
-      updatePredictionOnJs({ label, score, hasFace: true });
-    },
-    [model, detectFaces, resize, updatePredictionOnJs, frameCounter]
-  );
-
-  if (!hasPermission) {
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.statusText}>Camera permission required.</Text>
-      </View>
+    const updatePredictionOnJs = useMemo(
+        () =>
+            Worklets.createRunOnJS((next: UiPrediction) => {
+                setPrediction(next);
+            }),
+        []
     );
-  }
 
-  if (!device) {
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.statusText}>No front camera device found.</Text>
-      </View>
+    // DEBUG
+    const savedCountRef = useRef(0);
+    const saveInputOnJs = useMemo(
+        () =>
+            Worklets.createRunOnJS(async (flat: number[]) => {
+                savedCountRef.current += 1;
+
+                const debugDir = new Directory(Paths.document, 'debug_inputs');
+                debugDir.create({ idempotent: true, intermediates: true });
+
+                // const dir = `${FileSystem.documentDirectory}debug_inputs/`;
+                // await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+
+                const payload = {
+                    width: 145,
+                    height: 145,
+                    channels: 3,
+                    data: flat,
+                };
+
+                const outFile = new File(debugDir, `input_${Date.now()}.json`);
+                outFile.create({ overwrite: true });
+                outFile.write(JSON.stringify(payload));
+                console.log(savedCountRef);
+                // const path = `${dir}input_${Date.now()}.json`;
+                // await FileSystem.writeAsStringAsync(path, JSON.stringify(payload));
+                // console.log('saved tensor:', path);
+            }),
+        []
     );
-  }
 
-  if (modelState === 'loading') {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator />
-        <Text style={styles.statusText}>Loading TensorFlow Lite model...</Text>
-      </View>
+    const aFaceW = useMemo(() => Worklets.createSharedValue(0), []); //useMemo doesn't refresh value during re-renders
+    const aFaceH = useMemo(() => Worklets.createSharedValue(0), []);
+    const aFaceX = useMemo(() => Worklets.createSharedValue(0), []);
+    const aFaceY = useMemo(() => Worklets.createSharedValue(0), []);
+    // const aRot = useMemo(() => Worklets.createSharedValue(0), []);
+
+    //declare frame processor function passed to camera
+    const frameProcessor = useFrameProcessor(
+        // {"height": 480, "width": 640} frame size
+        (frame) => {
+            'worklet';
+
+            //If model is null exit
+            if (model == null) return;
+
+            //Skip frames to make faster
+            frameCounter.value += 1;
+            if (frameCounter.value % PROCESS_EVERY_N_FRAMES !== 0) return;
+
+            //detect face in current frame
+            const faces = detectFaces(frame) as Face[];
+
+            // no face found, update UI or skip
+            if (!faces || faces.length === 0) {
+                updateLandmarks([]);
+                updatePredictionOnJs({ label: 'No Face', score: 0, hasFace: false });
+                return;
+            }
+
+            // DEBUG
+            // const fullInput = resize(frame, {
+            //     scale: { width: 145, height: 145 },
+            //     pixelFormat: 'rgb',
+            //     dataType: 'float32',
+            // });
+            // if (frameCounter.value % DEBUG_SAVE_EVERY_N === 0) {
+            //     saveInputOnJs(Array.from(fullInput)); // input is Float32Array
+            // }
+
+            // each face has bounds(x, y, w, h) and landmarks(LEFT_EYE, ...)
+            const face = faces[0];
+
+            //face bounds
+            // Convert detector bounds to landscape-right frame space (640x480).
+            aFaceW.value = face.bounds.height;
+            aFaceH.value = face.bounds.width;
+            aFaceX.value = Math.max(0, Math.min(frame.width - 1, frame.width - (face.bounds.y + face.bounds.height)));
+            aFaceY.value = Math.max(0, Math.min(frame.height - 1, face.bounds.x));
+
+            // resize using vision-camera-resize-plugin
+            // input is tflite size, still need to draw landmarks
+            const input = resize(frame, {
+                crop: { x: aFaceX.value, y: aFaceY.value, width: aFaceW.value, height: aFaceH.value },
+                scale: { width: MODEL_INPUT_SIZE, height: MODEL_INPUT_SIZE },
+                pixelFormat: 'rgb', // match your training
+                dataType: 'float32',
+            });
+
+            // PREDICT FIX ATTEMOT
+            // const face = faces[0];
+            // const mirrorX = true; // front cam
+            // const o = String(frame.orientation);
+
+            // // 1) Convert face bounds to frame coords by transforming all 4 corners
+            // const b = face.bounds;
+            // const c1 = toFramePoint({ x: b.x, y: b.y }, frame.width, frame.height, o, mirrorX);
+            // const c2 = toFramePoint({ x: b.x + b.width, y: b.y }, frame.width, frame.height, o, mirrorX);
+            // const c3 = toFramePoint({ x: b.x, y: b.y + b.height }, frame.width, frame.height, o, mirrorX);
+            // const c4 = toFramePoint({ x: b.x + b.width, y: b.y + b.height }, frame.width, frame.height, o, mirrorX);
+            // const crop = rectFromCorners([c1, c2, c3, c4], frame.width, frame.height);
+
+            // // 2) Crop frame in frame-buffer space
+            // const input = resize(frame, {
+            //     crop,
+            //     scale: { width: MODEL_INPUT_SIZE, height: MODEL_INPUT_SIZE },
+            //     pixelFormat: 'rgb',
+            //     dataType: 'float32',
+            // });
+
+            // DEBUG
+            // if (frameCounter.value % DEBUG_SAVE_EVERY_N === 0) {
+            //     // console.log(aFaceW.value);
+            //     // console.log(aFaceH.value);
+            //     // console.log(aFaceX.value);
+            //     // console.log(aFaceY.value);
+            //     saveInputOnJs(Array.from(input)); // input is Float32Array
+            // }
+
+            //points for camera overlay
+            const overlayPoints: { x: number; y: number }[] = [];
+            const contours = face.contours as any;
+
+            const contourKeys = [
+                'FACE',
+                'LEFT_EYEBROW_TOP',
+                'LEFT_EYEBROW_BOTTOM',
+                'RIGHT_EYEBROW_TOP',
+                'RIGHT_EYEBROW_BOTTOM',
+                'LEFT_EYE',
+                'RIGHT_EYE',
+                'UPPER_LIP_TOP',
+                'UPPER_LIP_BOTTOM',
+                'LOWER_LIP_TOP',
+                'LOWER_LIP_BOTTOM',
+                'NOSE_BRIDGE',
+                'NOSE_BOTTOM',
+                'LEFT_CHEEK',
+                'RIGHT_CHEEK',
+            ];
+
+            for (const key of contourKeys) {
+                const contour = contours[key];
+                if (!contour) continue;
+
+                for (const p of contour) {
+                    const screenX = p.x;
+                    const screenY = p.y;
+
+                    // Rotate landmark into the same landscape-right frame space used by crop.
+                    const pFrameX = Math.max(0, Math.min(frame.width - 1, frame.width - screenY));
+                    const pFrameY = Math.max(0, Math.min(frame.height - 1, screenX));
+
+                    const { x, y } = mapLandmarkToCrop(pFrameX, pFrameY, aFaceX.value, aFaceY.value, aFaceW.value, aFaceH.value);
+                    stampDot(input, x, y, LANDMARK_DOT_RADIUS, MODEL_INPUT_SIZE);
+
+                    overlayPoints.push({
+                        x: -(screenX * 1.4) + overlaySize.width + 125,
+                        y: screenY * 1.25 + 5,
+                        // {"height": 480, "width": 640} frame size
+                    });
+                }
+                // console.log(frameCounter.value);
+            }
+
+            updateLandmarks(overlayPoints);
+
+            // DEBUG
+            // if (frameCounter.value % DEBUG_SAVE_EVERY_N === 0) {
+            //     saveInputOnJs(Array.from(input)); // input is Float32Array
+            // }
+
+            //feed stamped input to model
+            const outputs = model.runSync([input]) as unknown[];
+            // const outputs = model.runSync([]) as unknown[];
+            const out0 = outputs?.[0] as number[] | undefined; //
+            const score = Number(out0?.[0] ?? 0);
+            const classIndex = score >= 0.5 ? 1 : 0;
+            const label = CLASS_NAMES[classIndex] ?? 'Unknown';
+
+            updatePredictionOnJs({ label, score, hasFace: true });
+        },
+        [detectFaces, model]
     );
-  }
 
-  if (modelState === 'error') {
+    /*
+     * ERROR STATE RENDERING
+     */
+    if (!hasPermission) {
+        return (
+            <View style={styles.centered}>
+                <Text style={styles.statusText}>Camera permission required.</Text>
+            </View>
+        );
+    }
+
+    if (!device) {
+        return (
+            <View style={styles.centered}>
+                <Text style={styles.statusText}>No front camera found.</Text>
+            </View>
+        );
+    }
+
+    if (modelPlugin.state === 'loading') {
+        return (
+            <View style={styles.centered}>
+                <ActivityIndicator />
+                <Text style={styles.statusText}>Loading TensorFlow Lite model...</Text>
+            </View>
+        );
+    }
+
+    if (modelPlugin.state === 'error') {
+        return (
+            <View style={styles.centered}>
+                <Text style={styles.statusText}>Model load failed.</Text>
+                <Text style={styles.errorText}>{String(modelPlugin.error?.message ?? 'Unknown error')}</Text>
+            </View>
+        );
+    }
+
     return (
-      <View style={styles.centered}>
-        <Text style={styles.statusText}>Model load failed.</Text>
-        <Text style={styles.errorText}>
-          {String(modelPlugin.state === 'error' ? modelPlugin.error?.message : 'Unknown error')}
-        </Text>
-      </View>
+        // <View style={StyleSheet.absoluteFill}>
+        <>
+            <View
+                style={StyleSheet.absoluteFill}
+                onLayout={(e) => {
+                    const { width, height } = e.nativeEvent.layout;
+                    setOverlaySize({ width, height });
+                }}
+            >
+                <Camera frameProcessor={frameProcessor} style={StyleSheet.absoluteFill} device={device} isActive={true} />
+
+                <Svg style={StyleSheet.absoluteFill} width='100%' height='100%'>
+                    {landmarks.map((p, i) => (
+                        <Circle key={i} cx={p.x} cy={p.y} r={1} fill='white' />
+                    ))}
+                    <Circle cx={overlaySize.width} cy={overlaySize.height} r={50} fill='green' />
+                    <Circle cx={0} cy={0} r={4} fill='red' />
+                    {/* <Circle cx={frameSize.width} cy={frameSize.height} r={400} fill='red' /> */}
+                    <Circle cx={0} cy={0} r={4} fill='blue' />
+                    <Circle cx={0} cy={0} r={4} fill='blue' />
+                    <Circle cx={0} cy={0} r={4} fill='blue' />
+                    <Circle cx={0} cy={0} r={4} fill='blue' />
+                </Svg>
+
+                <View style={styles.badge}>
+                    <Text style={styles.badgeTitle}>Driver State</Text>
+                    <Text style={styles.badgeLabel}>{prediction.label}</Text>
+                    <Text style={styles.badgeScore}>score: {prediction.score.toFixed(3)}</Text>
+                    <Text style={styles.badgeMeta}>{prediction.hasFace ? 'face: detected' : 'face: none'}</Text>
+                </View>
+            </View>
+        </>
     );
-  }
-
-  return (
-    <View style={styles.container}>
-      <Camera
-        style={StyleSheet.absoluteFill}
-        device={device}
-        isActive={true}
-        pixelFormat="yuv"
-        frameProcessor={frameProcessor}
-      />
-
-      <View style={styles.badge}>
-        <Text style={styles.badgeTitle}>Driver State</Text>
-        <Text style={styles.badgeLabel}>{prediction.label}</Text>
-        <Text style={styles.badgeScore}>score: {prediction.score.toFixed(3)}</Text>
-        <Text style={styles.badgeMeta}>{prediction.hasFace ? 'face: detected' : 'face: none'}</Text>
-      </View>
-    </View>
-  );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#111',
-    padding: 16,
-  },
-  statusText: {
-    color: '#FFF',
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  errorText: {
-    color: '#FCA5A5',
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  badge: {
-    position: 'absolute',
-    top: 56,
-    left: 16,
-    right: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    padding: 12,
-    borderRadius: 10,
-  },
-  badgeTitle: {
-    color: '#9CA3AF',
-    fontSize: 12,
-    marginBottom: 2,
-  },
-  badgeLabel: {
-    color: '#FFF',
-    fontSize: 20,
-    fontWeight: '700',
-  },
-  badgeScore: {
-    color: '#D1D5DB',
-    fontSize: 13,
-    marginTop: 2,
-  },
-  badgeMeta: {
-    color: '#D1D5DB',
-    fontSize: 13,
-  },
+    centered: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#111',
+        padding: 16,
+    },
+    statusText: {
+        color: '#FFF',
+        marginTop: 8,
+        textAlign: 'center',
+    },
+    errorText: {
+        color: '#FCA5A5',
+        marginTop: 8,
+        textAlign: 'center',
+    },
+    badge: {
+        position: 'absolute',
+        top: 56,
+        left: 16,
+        right: 16,
+        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        padding: 12,
+        borderRadius: 10,
+    },
+    badgeTitle: {
+        color: '#9CA3AF',
+        fontSize: 12,
+        marginBottom: 2,
+    },
+    badgeLabel: {
+        color: '#FFF',
+        fontSize: 20,
+        fontWeight: '700',
+    },
+    badgeScore: {
+        color: '#D1D5DB',
+        fontSize: 13,
+        marginTop: 2,
+    },
+    badgeMeta: {
+        color: '#D1D5DB',
+        fontSize: 13,
+    },
 });

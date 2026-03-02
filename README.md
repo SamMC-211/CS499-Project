@@ -22,20 +22,23 @@ https://github.com/expo/examples/blob/master/with-camera/App.tsx
 https://docs.expo.dev/versions/latest/sdk/accelerometer/
 
 
-# Commands Ran
-**Create Virtual Env For Python Dependencies**
-- .../CS499-Project/mobile/sensor-app (main)
-    - $ py -3.12 --version
-    - Python 3.12.10
-    - $ py -3.12 -m venv venv(can be whatever you want to name env)
-    - *Activate on Linux*
-        - source venv/bin/activate
-- **From venv** 
-    - python
-    - import mediapipe as mp
-    - print(mp.__version__)
-- **To Activate Python (venv)??**
-    - source venv/Scripts/activate
+# Command List
+- **Create Virtual Env For Python Dependencies**
+    - `python -3.12 -m venv venv(can be whatever you want to name env)`
+- **Import Python Dependencies** 
+    - `pip install -r requirements.txt`
+- **To Activate Python (venv)**
+    - `source venv/Scripts/activate`
+- **Build Expo to Android**
+    - `npx expo prebuild`
+    - `npx expo run:android`
+- **Pull Debug Files From Mobile** 
+    - `adb shell run-as com.anonymous.sensorapp ls files`
+    - `adb shell run-as com.anonymous.sensorapp ls files/debug_inputs`
+    - `adb exec-out "run-as com.anonymous.sensorapp tar -C files -cf - debug_inputs" > debug_inputs.tar`
+    - `tar -xf debug_inputs.tar`
+- **Clear Debug Directory on Mobile**
+    - `adb shell run-as com.anonymous.sensorapp rm -rf files/debug_inputs`
 
 # Week 3 Meeting Notes
 - Available MediaPipe facial detection models
@@ -118,3 +121,23 @@ Additionally there were some changes to the tech stack as I progressed within th
         - `Tasks Face Landmarker`
     - TensorFlow 2.20.0
     - OpenCV-Python 4.13.0.92
+
+# Week 5 Meeting Notes
+
+I spent this week familiarizing myself with and troubleshooting my implementation of the preprocessing steps needed before I start feeding faces to my model. This was quite difficult as I was running into issues with mapping points from the react-native-vision-camera-face-detector. Heres a list of some of the things I accomplished during this week.
+- **Implemented **
+    - frameProcessor
+    - mapLandmarkToCrop
+    - stampDot
+- Troubleshot the process of mapping contour points from the face-detector to the user camera view
+    - Scaling conversion issues
+    - View bounds issue
+
+
+# Week 6 Meeting Notes
+
+This week I worked on getting the model up and running on mobile, I toiled a lot over this issue and while I didn't gain much ground in terms of app side development I did realize some changes to my approach I may need to make for this mobile application. Specificially addressing the disconnect between the preprocessing and training steps for the model vs the capabilities of mobile. 
+- Familiarized myself with react-native-fast-tflite
+- Create a Python script to render images from the Float32Array format that I am preprocessing frame inputs into for debugging
+- Spent time troubleshooting the image stamping of inputs for the model and mapping points from the face detector to the frame
+- Began feeding preprocessed images to my model and created UI to display driver state prediction
