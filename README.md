@@ -141,3 +141,4 @@ This week I worked on getting the model up and running on mobile, I toiled a lot
 - Create a Python script to render images from the Float32Array format that I am preprocessing frame inputs into for debugging
 - Spent time troubleshooting the image stamping of inputs for the model and mapping points from the face detector to the frame
 - Began feeding preprocessed images to my model and created UI to display driver state prediction
+- Build Issues, had to set minSdkVersion to 26 in 'android/app/build.gradle'
