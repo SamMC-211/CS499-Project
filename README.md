@@ -39,6 +39,8 @@ https://docs.expo.dev/versions/latest/sdk/accelerometer/
     - `tar -xf debug_inputs.tar`
 - **Clear Debug Directory on Mobile**
     - `adb shell run-as com.anonymous.sensorapp rm -rf files/debug_inputs`
+- **Android Debug**
+    - adb logcat | grep com.anonymous.sensorapp
 
 # Week 3 Meeting Notes
 - Available MediaPipe facial detection models
