@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import {
     ActivityIndicator,
+    Pressable,
     StyleSheet,
     Text,
     View,
@@ -77,6 +78,24 @@ function mapLandmarkToCrop(
     return { x: cx, y: cy };
 }
 
+// Rotate a square RGB Float32Array buffer 90° counter-clockwise in-place so that
+// the landscape-right camera crop becomes an upright face matching the training data.
+function rotateBuffer90CCW(input: Float32Array, size: number): Float32Array {
+    'worklet';
+    const out = new Float32Array(input.length);
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            // CCW: newPixel(x, y) = oldPixel(size-1-y, x)
+            const srcOffset = (x * size + (size - 1 - y)) * 3;
+            const dstOffset = (y * size + x) * 3;
+            out[dstOffset] = input[srcOffset];
+            out[dstOffset + 1] = input[srcOffset + 1];
+            out[dstOffset + 2] = input[srcOffset + 2];
+        }
+    }
+    return out;
+}
+
 //Draw dot at landmark position
 function stampDot(
     input: Float32Array,
@@ -110,6 +129,8 @@ export default function DrowsinessScreen() {
     const frameCounter = useMemo(() => Worklets.createSharedValue(0), []); //shared value across frames
     const [landmarks, setLandmarks] = useState<{ x: number; y: number }[]>([]); //points from face detector
     const [overlaySize, setOverlaySize] = useState({ width: 0, height: 0 }); //View dimensions
+    const [debugEnabled, setDebugEnabled] = useState(false);
+    const debugEnabledShared = useMemo(() => Worklets.createSharedValue(false), []);
 
     const modelPlugin = useTensorflowModel(
         require('../../assets/ml/drowsiness_cnn.tflite'),
@@ -138,6 +159,11 @@ export default function DrowsinessScreen() {
         // windowHeight:
         // windowWidth:
     });
+
+    // Sync debug toggle to worklet shared value
+    useEffect(() => {
+        debugEnabledShared.value = debugEnabled;
+    }, [debugEnabled]);
 
     // If hasPermission is False, requestPermission
     useEffect(() => {
@@ -265,7 +291,7 @@ export default function DrowsinessScreen() {
             // Step 4: Crop and resize frame to MODEL_INPUT_SIZE using the resize plugin.
             // pixelFormat 'rgb' and dataType 'float32' give us a Float32Array in [0, 255] range.
             // (The Rescaling layer inside the TFLite model handles the /255 normalization.)
-            const input = resize(frame, {
+            const cropped = resize(frame, {
                 crop: {
                     x: aFaceX.value,
                     y: aFaceY.value,
@@ -276,6 +302,10 @@ export default function DrowsinessScreen() {
                 pixelFormat: 'rgb',
                 dataType: 'float32',
             });
+
+            // Rotate 90° CCW so the landscape-right crop becomes an upright face
+            // matching the orientation of the training images.
+            const input = rotateBuffer90CCW(cropped, MODEL_INPUT_SIZE);
 
             // PREDICT FIX ATTEMOT
             // const face = faces[0];
@@ -356,7 +386,7 @@ export default function DrowsinessScreen() {
                         Math.min(frame.height - 1, screenX),
                     );
 
-                    const { x, y } = mapLandmarkToCrop(
+                    const mapped = mapLandmarkToCrop(
                         pFrameX,
                         pFrameY,
                         aFaceX.value,
@@ -364,6 +394,9 @@ export default function DrowsinessScreen() {
                         aFaceW.value,
                         aFaceH.value,
                     );
+                    // Apply the same 90° CCW rotation to landmark coordinates
+                    const x = mapped.y;
+                    const y = MODEL_INPUT_SIZE - 1 - mapped.x;
                     stampDot(input, x, y, dotRadius, MODEL_INPUT_SIZE);
 
                     overlayPoints.push({
@@ -376,10 +409,10 @@ export default function DrowsinessScreen() {
 
             updateLandmarks(overlayPoints);
 
-            // DEBUG
-            // if (frameCounter.value % DEBUG_SAVE_EVERY_N === 0) {
-            //     saveInputOnJs(Array.from(input)); // input is Float32Array
-            // }
+            // Save debug input when toggle is enabled
+            if (debugEnabledShared.value && frameCounter.value % DEBUG_SAVE_EVERY_N === 0) {
+                saveInputOnJs(Array.from(input));
+            }
 
             // Step 5: Run TFLite inference on the cropped, dot-stamped input buffer
             const outputs = model.runSync([input]) as unknown[];
@@ -395,7 +428,7 @@ export default function DrowsinessScreen() {
 
             updatePredictionOnJs({ label, score, hasFace: true });
         },
-        [detectFaces, model],
+        [detectFaces, model, debugEnabledShared],
     );
 
     /*
@@ -422,9 +455,9 @@ export default function DrowsinessScreen() {
     if (modelPlugin.state === 'loading') {
         return (
             <View style={styles.centered}>
-                <ActivityIndicator />
+                <ActivityIndicator color="#93C5FD" size="large" />
                 <Text style={styles.statusText}>
-                    Loading TensorFlow Lite model...
+                    Loading model...
                 </Text>
             </View>
         );
@@ -460,32 +493,34 @@ export default function DrowsinessScreen() {
 
                 <Svg style={StyleSheet.absoluteFill} width="100%" height="100%">
                     {landmarks.map((p, i) => (
-                        <Circle key={i} cx={p.x} cy={p.y} r={1} fill="white" />
+                        <Circle key={i} cx={p.x} cy={p.y} r={1.5} fill="rgba(173,216,230,0.85)" />
                     ))}
-                    <Circle
-                        cx={overlaySize.width}
-                        cy={overlaySize.height}
-                        r={50}
-                        fill="green"
-                    />
-                    <Circle cx={0} cy={0} r={4} fill="red" />
-                    {/* <Circle cx={frameSize.width} cy={frameSize.height} r={400} fill='red' /> */}
-                    <Circle cx={0} cy={0} r={4} fill="blue" />
-                    <Circle cx={0} cy={0} r={4} fill="blue" />
-                    <Circle cx={0} cy={0} r={4} fill="blue" />
-                    <Circle cx={0} cy={0} r={4} fill="blue" />
                 </Svg>
 
                 <View style={styles.badge}>
                     <Text style={styles.badgeTitle}>Driver State</Text>
-                    <Text style={styles.badgeLabel}>{prediction.label}</Text>
+                    <Text style={[
+                        styles.badgeLabel,
+                        { color: prediction.label === 'Fatigue Subjects' ? '#F87171' : '#93C5FD' }
+                    ]}>{prediction.label}</Text>
+                    <View style={styles.badgeDivider} />
                     <Text style={styles.badgeScore}>
-                        score: {prediction.score.toFixed(3)}
+                        {prediction.score.toFixed(3)}
                     </Text>
                     <Text style={styles.badgeMeta}>
-                        {prediction.hasFace ? 'face: detected' : 'face: none'}
+                        {prediction.hasFace ? 'Face Detected' : 'No Face'}
                     </Text>
                 </View>
+
+                <Pressable
+                    onPress={() => setDebugEnabled((v) => !v)}
+                    android_ripple={{ color: 'rgba(147, 197, 253, 0.3)' }}
+                    style={[styles.debugButton, debugEnabled && styles.debugButtonActive]}
+                >
+                    <Text style={[styles.debugButtonText, debugEnabled && styles.debugButtonTextActive]}>
+                        {debugEnabled ? 'Debug: ON' : 'Debug: OFF'}
+                    </Text>
+                </Pressable>
             </View>
         </>
     );
@@ -496,45 +531,84 @@ const styles = StyleSheet.create({
         flex: 1,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: '#111',
-        padding: 16,
+        backgroundColor: '#0F172A',
+        padding: 24,
     },
     statusText: {
-        color: '#FFF',
-        marginTop: 8,
+        color: '#BFDBFE',
+        marginTop: 12,
         textAlign: 'center',
+        fontSize: 15,
+        fontWeight: '500',
     },
     errorText: {
         color: '#FCA5A5',
         marginTop: 8,
         textAlign: 'center',
+        fontSize: 13,
     },
     badge: {
         position: 'absolute',
         top: 56,
         left: 16,
         right: 16,
-        backgroundColor: 'rgba(0, 0, 0, 0.7)',
-        padding: 12,
-        borderRadius: 10,
+        backgroundColor: 'rgba(15, 23, 42, 0.82)',
+        padding: 16,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: 'rgba(147, 197, 253, 0.2)',
     },
     badgeTitle: {
-        color: '#9CA3AF',
-        fontSize: 12,
-        marginBottom: 2,
+        color: '#94A3B8',
+        fontSize: 11,
+        fontWeight: '600',
+        letterSpacing: 1.2,
+        textTransform: 'uppercase',
+        marginBottom: 4,
     },
     badgeLabel: {
-        color: '#FFF',
-        fontSize: 20,
+        color: '#93C5FD',
+        fontSize: 22,
         fontWeight: '700',
     },
+    badgeDivider: {
+        height: 1,
+        backgroundColor: 'rgba(147, 197, 253, 0.15)',
+        marginVertical: 8,
+    },
     badgeScore: {
-        color: '#D1D5DB',
-        fontSize: 13,
-        marginTop: 2,
+        color: '#CBD5E1',
+        fontSize: 28,
+        fontWeight: '300',
+        fontVariant: ['tabular-nums'],
     },
     badgeMeta: {
-        color: '#D1D5DB',
+        color: '#64748B',
+        fontSize: 12,
+        fontWeight: '500',
+        marginTop: 4,
+    },
+    debugButton: {
+        position: 'absolute',
+        bottom: 32,
+        alignSelf: 'center',
+        paddingVertical: 10,
+        paddingHorizontal: 20,
+        backgroundColor: 'rgba(15, 23, 42, 0.82)',
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(147, 197, 253, 0.25)',
+    },
+    debugButtonActive: {
+        backgroundColor: 'rgba(59, 130, 246, 0.25)',
+        borderColor: '#3B82F6',
+    },
+    debugButtonText: {
+        color: '#64748B',
         fontSize: 13,
+        fontWeight: '600',
+    },
+    debugButtonTextActive: {
+        color: '#93C5FD',
     },
 });

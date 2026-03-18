@@ -2,8 +2,6 @@ import { useState, useEffect } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Accelerometer } from 'expo-sensors';
 import { EventSubscription } from 'expo-modules-core';
-import { green } from 'react-native-reanimated/lib/typescript/Colors';
-
 export default function AccelerometerScreen() {
     const [{ x, y, z }, setData] = useState({
         x: 0,
@@ -36,21 +34,21 @@ export default function AccelerometerScreen() {
                     style={{
                         flexGrow: 1,
                         width: 200 * Math.abs(x),
-                        backgroundColor: 'blue',
+                        backgroundColor: '#60A5FA',
                     }}
                 />
                 <View
                     style={{
                         flexGrow: 1,
                         width: 200 * Math.abs(y),
-                        backgroundColor: 'green',
+                        backgroundColor: '#93C5FD',
                     }}
                 />
                 <View
                     style={{
                         flexGrow: 1,
                         width: 200 * Math.abs(z),
-                        backgroundColor: 'red',
+                        backgroundColor: '#BFDBFE',
                     }}
                 />
             </View>
@@ -60,13 +58,13 @@ export default function AccelerometerScreen() {
             <Text style={styles.text}>z: {z}</Text>
             <View style={styles.buttonContainer}>
                 <TouchableOpacity onPress={subscription ? _unsubscribe : _subscribe} style={styles.button}>
-                    <Text>{subscription ? 'On' : 'Off'}</Text>
+                    <Text style={styles.btnText}>{subscription ? 'On' : 'Off'}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={_slow} style={[styles.button, styles.middleButton]}>
-                    <Text>Slow</Text>
+                    <Text style={styles.btnText}>Slow</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={_fast} style={styles.button}>
-                    <Text>Fast</Text>
+                    <Text style={styles.btnText}>Fast</Text>
                 </TouchableOpacity>
             </View>
         </View>
@@ -78,33 +76,44 @@ const styles = StyleSheet.create({
         flex: 1,
         justifyContent: 'center',
         paddingHorizontal: 20,
+        backgroundColor: '#0F172A',
     },
     graph: {
         flexDirection: 'column',
         height: 200,
         width: 200,
         borderWidth: 1,
-        borderColor: 'black',
+        borderColor: 'rgba(147, 197, 253, 0.2)',
+        borderRadius: 8,
         gap: 10,
+        overflow: 'hidden',
     },
     text: {
         textAlign: 'center',
+        color: '#CBD5E1',
+        fontSize: 13,
     },
     buttonContainer: {
         flexDirection: 'row',
         alignItems: 'stretch',
         marginTop: 15,
+        borderRadius: 8,
+        overflow: 'hidden',
     },
     button: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: '#eee',
-        padding: 10,
+        backgroundColor: 'rgba(30, 58, 138, 0.3)',
+        padding: 12,
     },
     middleButton: {
         borderLeftWidth: 1,
         borderRightWidth: 1,
-        borderColor: '#ccc',
+        borderColor: 'rgba(147, 197, 253, 0.15)',
+    },
+    btnText: {
+        color: '#93C5FD',
+        fontWeight: '500',
     },
 });

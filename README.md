@@ -35,6 +35,7 @@ https://docs.expo.dev/versions/latest/sdk/accelerometer/
 - **Build Expo to Android**
     - `npx expo prebuild`
     - `npx expo run:android`
+    - `npx expo run:android --variant release`
 - **Pull Debug Files From Mobile** 
     - `adb shell run-as com.anonymous.sensorapp ls files`
     - `adb shell run-as com.anonymous.sensorapp ls files/debug_inputs`
@@ -48,7 +49,49 @@ https://docs.expo.dev/versions/latest/sdk/accelerometer/
     - `subst X: C:\Users\samsu\CS499-Project`   
 - **For full model training pipeline**
     - `python train_model.py` 
-- **After new training, before new app build** 
+- **After new training, before new app build**
+    - Copy artifacts: `cp model_training/artifacts/drowsiness_cnn.tflite assets/ml/drowsiness_cnn.tflite`
+    - Copy labels: `cp model_training/artifacts/labels.json assets/ml/labels.json`
+    - Clean & rebuild: `npx expo prebuild --clean && npx expo run:android --variant release`
+- **Build Release APK**
+    ```bash
+    cd mobile/sensor-app
+    npx expo run:android --variant release
+    ```
+    The APK will be at: `mobile/sensor-app/android/app/build/outputs/apk/release/app-release.apk`
+
+    If you change native config (app.json plugins, permissions, SDK version), run a clean prebuild first:
+    ```bash
+    npx expo prebuild --clean && npx expo run:android --variant release
+    ```
+
+- **Serve Release APK to Phone via Tailscale**
+    1. Build the release APK (see above)
+    2. From the project root, serve with:
+        ```bash
+        python serve.py
+        ```
+    3. Get your desktop's Tailscale IP:
+        ```bash
+        tailscale ip -4
+        ```
+    4. On your phone (connected to the same tailnet), open a browser and go to:
+        ```
+        http://<desktop-tailscale-ip>:8080/app-release.apk
+        ```
+    5. Android will prompt you to install. Enable "Install unknown apps" for your browser in **Settings > Apps > [browser] > Install unknown apps** if not already enabled.
+
+    > **Tip:** If you get "App not installed" errors, uninstall the previous version first — release and debug APKs have different signing keys.
+
+- **Pull Debug Images from Mobile**
+    1. Enable debug mode in the Drowsiness Detection screen (tap "Debug: OFF" button at the bottom)
+    2. Let the app capture some frames, then connect phone via USB
+    3. Pull and convert to images:
+        ```bash
+        python serve.py pull          # Pull debug inputs and convert to images
+        python serve.py pull --clean  # Same, but also clear debug files from device
+        ```
+    4. Images are saved to: `mobile/sensor-app/model_training/debugging/debug_pngs/`
 
 
 # Week 3 Meeting Notes
@@ -157,7 +200,7 @@ This week I worked on getting the model up and running on mobile, I toiled a lot
 
 # Week 7
 
-# Week 8?
+This week I've spent attempting to retrain the model to be accurate on mobile.
 
 - Retrained model with MLKit landmarks, tested...
     - Was missing a few landmark groups, model was less accurate than before
@@ -165,44 +208,14 @@ This week I worked on getting the model up and running on mobile, I toiled a lot
 - Retrained model after including missing MLKit landmark groups
 
 Model Versions (In Artifacts)
-- Drowsiness (Base model using MediaPipe facial landmarking)
+- Drowsiness (Base model using MediaPipe facial landmarking)   
+    - Most accurate so far, fluctuating reading
 - Drowsiness 1.0 (Model using MLKit facial landmarking)
+    - Missing landmarks innacurate on mobile
 - Drowsiness 2.0 (Model using MLKit including previously missing landmark groups)
+    - Updated preprocessing to include all landmark groups
+    - Still highly innacurate on mobile
 
-Can you tell me how I should copy the output artifacts into the 'ml' directory of my app assets? Do they need to be named without a 1.0 or 2.0? and the old   models get renamed? Also how do I go about implementing option 2 in the remote dev setup folder to connect my phone to download the apk?                                                                                                                                                                                        ● Searched for 4 patterns, read 2 files (ctrl+o to expand)                                                                                                      
-                                                                                                                                                                
-● Copying model artifacts                                                                                                                                       
-                                                                                                                                                                
-  The app hardcodes these exact filenames in drowsiness.tsx:                                                                                                    
-  - require('../../assets/ml/drowsiness_cnn.tflite') (line 115)                                                                                                 
-  - import labels from '../../assets/ml/labels.json' (line 32)                                                                                                                                                                                                                                                                  
-  So the files must be named exactly drowsiness_cnn.tflite and labels.json. The _1.0 versions in there now are just old backups. To update:                     
-
-  # From the project root
-  cp mobile/sensor-app/model_training/artifacts/drowsiness_cnn.tflite mobile/sensor-app/assets/ml/drowsiness_cnn.tflite
-  cp mobile/sensor-app/model_training/artifacts/labels.json mobile/sensor-app/assets/ml/labels.json
-
-  But first run the export step to convert .keras to .tflite:
-  python mobile/sensor-app/model_training/train_model.py export
-
-  The _1.0 files can stay as backups or you can delete them — the app doesn't reference them.
-
-  ---
-  Option 2: Local Build + HTTP Server
-
-  It's already documented step-by-step in your REMOTE_DEV_SETUP.md. The short version:
-
-  1. Build the APK:
-  cd mobile/sensor-app/android && ./gradlew assembleDebug
-
-  2. Serve it:
-  cd mobile/sensor-app/android/app/build/outputs/apk/debug
-  python -m http.server 8080
-
-  3. On your phone, install Tailscale and log into the same account as your desktop. Then open your phone's browser and go to:
-  http://<desktop-tailscale-ip>:8080/app-debug.apk
-
-  Get the desktop's Tailscale IP with tailscale ip -4. You'll need to enable "Install unknown apps" for your browser in Android settings.
-
-✻ Brewed for 47s         
-    
+- Created serve.py to download apk remotely after building
+- Drow
+        
