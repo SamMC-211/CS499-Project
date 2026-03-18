@@ -2,9 +2,11 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import tensorflow as tf
+from sklearn.metrics import classification_report, confusion_matrix
 
-from config import CLASS_NAMES, IMG_SIZE, MODELS_DIR, PROCESSED_DIR
+from config import CLASS_NAMES, IMG_SIZE, MODELS_DIR, PROCESSED_BASE_DIR
 
 # Build a CNN model, Load processed images into TensorFlow datasets, Trains model and saves it
 
@@ -85,7 +87,11 @@ def make_datasets(
         class_names=CLASS_NAMES,
     )
 
-    # Validation split 20%
+    # Validation split 20%.
+    # shuffle=True with the same seed ensures the file list is shuffled identically
+    # to the training split, so both classes appear in the validation set.
+    # (shuffle=False sorts files alphabetically, causing the split to land entirely
+    # in whichever class comes last alphabetically.)
     val_ds = tf.keras.utils.image_dataset_from_directory(
         processed_dir,
         labels="inferred",
@@ -93,7 +99,7 @@ def make_datasets(
         color_mode="rgb",
         image_size=(IMG_SIZE, IMG_SIZE),
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=True,
         validation_split=validation_split,
         subset="validation",
         seed=seed,
@@ -108,7 +114,7 @@ def make_datasets(
 
 
 def train_and_save(
-    processed_dir: Path = PROCESSED_DIR,
+    processed_dir: Path = PROCESSED_BASE_DIR,
     artifacts_dir: Path = MODELS_DIR,
     epochs: int = 20,
     batch_size: int = 32,
@@ -117,48 +123,141 @@ def train_and_save(
 ) -> tuple[Path, Path]: # return path for model and labels
     
     # load datasets
-    train_ds, val_ds = make_datasets(processed_dir, batch_size, validation_split, seed) 
+    train_ds, val_ds = make_datasets(processed_dir, batch_size, validation_split, seed)
+
+    # Section 4 (DEVELOPMENT_GUIDE.md): Check for class imbalance and compute class weights.
+    processed_dir = Path(processed_dir)
+    counts = {name: len(list((processed_dir / name).iterdir())) for name in CLASS_NAMES}
+    for name, count in counts.items():
+        print(f"  {name}: {count} images")
+    total_images = sum(counts.values())
+    class_weight = {
+        i: total_images / (len(counts) * count)
+        for i, (name, count) in enumerate(counts.items())
+    }
+    print(f"Class weights: {class_weight}")
 
     # build model
     model = build_model()
 
-    # trains for epochs
-    history = model.fit(train_ds, validation_data=val_ds, epochs=epochs)
+    artifacts_dir = Path(artifacts_dir)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    # Section 4 (DEVELOPMENT_GUIDE.md): EarlyStopping + ModelCheckpoint — save best val_accuracy epoch.
+    best_model_path = artifacts_dir / "drowsiness_cnn.keras"
+    callbacks = [
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(best_model_path),
+            monitor="val_accuracy",
+            save_best_only=True,
+            verbose=1,
+        ),
+        tf.keras.callbacks.EarlyStopping(
+            monitor="val_accuracy",
+            patience=5,
+            restore_best_weights=True,
+            verbose=1,
+        ),
+    ]
+
+    # trains for epochs, applying class weights and callbacks
+    history = model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=epochs,
+        class_weight=class_weight,
+        callbacks=callbacks,
+    )
 
     # gets validation loss and accuracy
     eval_metrics = model.evaluate(val_ds, verbose=0)
 
-    artifacts_dir = Path(artifacts_dir) # model output path
-    artifacts_dir.mkdir(parents=True, exist_ok=True) # make directories if needed
-    #create filenames for outputs
-    model_path = artifacts_dir / "drowsiness_cnn.keras"
+    # Section 4 (DEVELOPMENT_GUIDE.md): Confusion matrix and classification report.
+    all_labels, all_preds = [], []
+    for images, labels in val_ds:
+        preds = model.predict(images, verbose=0)
+        all_labels.extend(labels.numpy())
+        all_preds.extend((preds.squeeze() >= 0.5).astype(int))
+    cm = confusion_matrix(all_labels, all_preds)
+    report = classification_report(all_labels, all_preds, target_names=CLASS_NAMES)
+    print("\nConfusion Matrix:")
+    print(cm)
+    print("\nClassification Report:")
+    print(report)
+
     labels_path = artifacts_dir / "labels.json"
     metrics_path = artifacts_dir / "metrics.json"
 
-    #save model
-    model.save(model_path)
-    # with this file open, do ...
     with open(labels_path, "w", encoding="utf-8") as f:
         json.dump({"class_names": CLASS_NAMES}, f, indent=2)
 
-    history_json = {k: [float(v) for v in values] for k, values in history.history.items()} # format and store training metrics per epoch
+    history_json = {k: [float(v) for v in values] for k, values in history.history.items()}
     metrics_payload = {
         "eval_loss": float(eval_metrics[0]),
         "eval_accuracy": float(eval_metrics[1]),
         "history": history_json,
+        "confusion_matrix": cm.tolist(),
+        "classification_report": report,
     }
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics_payload, f, indent=2)
 
-    print(f"Saved model: {model_path}")
+    print(f"Saved model: {best_model_path}")
     print(f"Saved labels: {labels_path}")
     print(f"Saved metrics: {metrics_path}")
-    return model_path, labels_path
+    return best_model_path, labels_path
+
+
+def _discover_datasets(base: Path) -> list[Path]:
+    """Return sorted list of processed dataset directories under *base*."""
+    base = Path(base)
+    if not base.exists():
+        return []
+    candidates = sorted(
+        [d for d in base.iterdir() if d.is_dir() and (d / CLASS_NAMES[0]).exists()],
+        key=lambda p: p.name,
+    )
+    return candidates
+
+
+def _prompt_dataset_selection(base: Path) -> Path:
+    """List available preprocessed datasets and let the user pick one."""
+    datasets = _discover_datasets(base)
+    if not datasets:
+        raise FileNotFoundError(
+            f"No preprocessed datasets found under {base}. "
+            "Run preprocess.py first to create one."
+        )
+    if len(datasets) == 1:
+        print(f"Using the only available dataset: {datasets[0].name}")
+        return datasets[0]
+
+    print("\nAvailable preprocessed datasets:")
+    for i, ds in enumerate(datasets, start=1):
+        # Show image counts per class for quick reference
+        counts = {
+            name: len(list((ds / name).iterdir())) for name in CLASS_NAMES if (ds / name).exists()
+        }
+        summary = ", ".join(f"{name}: {c}" for name, c in counts.items())
+        print(f"  [{i}] {ds.name}  ({summary})")
+
+    while True:
+        choice = input(f"\nSelect dataset [1-{len(datasets)}]: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(datasets):
+            selected = datasets[int(choice) - 1]
+            print(f"Selected: {selected.name}\n")
+            return selected
+        print("Invalid selection, try again.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train drowsiness CNN from processed dataset.")
-    parser.add_argument("--processed-dir", type=Path, default=PROCESSED_DIR)
+    parser.add_argument(
+        "--processed-dir",
+        type=Path,
+        default=None,
+        help="Path to a specific preprocessed dataset folder. If omitted you will be prompted to choose.",
+    )
     parser.add_argument("--artifacts-dir", type=Path, default=MODELS_DIR)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -166,8 +265,13 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    if args.processed_dir:
+        processed_dir = args.processed_dir
+    else:
+        processed_dir = _prompt_dataset_selection(PROCESSED_BASE_DIR)
+
     train_and_save(
-        processed_dir=args.processed_dir,
+        processed_dir=processed_dir,
         artifacts_dir=args.artifacts_dir,
         epochs=args.epochs,
         batch_size=args.batch_size,

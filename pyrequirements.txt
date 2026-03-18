@@ -4,3 +4,4 @@ opencv-python==4.13.0.92
 tensorflow==2.20.0
 pandas==2.3.2
 matplotlib==3.10.6
+scikit-learn==1.8.0

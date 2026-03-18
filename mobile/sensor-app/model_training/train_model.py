@@ -28,9 +28,11 @@ def main() -> None:
         print(f"Preprocessing complete. Wrote {total} images.")
 
     if args.step in {"train", "all"}:
-        from train import train_and_save
+        from train import train_and_save, _prompt_dataset_selection
+        from config import PROCESSED_BASE_DIR
 
-        train_and_save(epochs=args.epochs)
+        processed_dir = _prompt_dataset_selection(PROCESSED_BASE_DIR)
+        train_and_save(processed_dir=processed_dir, epochs=args.epochs)
 
     if args.step in {"export", "all"}:
         from export_tflite import export_tflite

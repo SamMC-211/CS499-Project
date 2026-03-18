@@ -9,5 +9,6 @@ RAW_IMAGES_DIR = INPUT_ROOT / "drowsiness-prediction-dataset" / "0 FaceImages"
 CASCADE_PATH = INPUT_ROOT / "prediction-images" / "haarcascade_frontalface_default.xml"
 FACE_LANDMARKER_TASK_PATH = BASE_DIR / "input" / "face_landmarker.task"
 
-PROCESSED_DIR = BASE_DIR / "processed"
+PROCESSED_BASE_DIR = BASE_DIR / "processed"  # Parent; each run creates a dated subfolder
+PROCESSED_DIR = PROCESSED_BASE_DIR  # Legacy alias kept for imports that reference it
 MODELS_DIR = BASE_DIR / "artifacts"

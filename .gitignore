@@ -55,5 +55,11 @@ __pycache__/
 #Model Training Data
 mobile/sensor-app/model_training/input/
 mobile/sensor-app/model_training/processed/
+mobile/sensor-app/model_training/processed_OLD/
 mobile/sensor-app/model_training/artifacts/
 mobile/sensor-app/model_training/EXPO_REALTIME_INTEGRATION.md
+
+# Code documents
+REMOTE_DEV_SETUP.md
+DEVELOPMENT_GUIDE.md
+CLAUDE_INSTRUCTIONS.md

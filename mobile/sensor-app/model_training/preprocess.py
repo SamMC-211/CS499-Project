@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -12,14 +13,76 @@ from config import (
     CLASS_NAMES,
     FACE_LANDMARKER_TASK_PATH,
     IMG_SIZE,
-    PROCESSED_DIR,
+    PROCESSED_BASE_DIR,
     RAW_IMAGES_DIR,
 )
 
-# Index groups for optional eye landmark highlighting.
-chosen_left_eye_idxs = [362, 385, 387, 263, 373, 380]
-chosen_right_eye_idxs = [33, 160, 158, 133, 153, 144]
-all_chosen_idxs = set(chosen_left_eye_idxs + chosen_right_eye_idxs)
+# Section 3 (DEVELOPMENT_GUIDE.md): MLKit contour index subset.
+# Training now draws ONLY the landmark indices that react-native-vision-camera-face-detector
+# returns on mobile, so training preprocessing and mobile inference stay in sync.
+#
+# The mobile app (drowsiness.tsx) iterates over these contour keys:
+#   FACE, LEFT_EYEBROW_TOP, LEFT_EYEBROW_BOTTOM, RIGHT_EYEBROW_TOP, RIGHT_EYEBROW_BOTTOM,
+#   LEFT_EYE, RIGHT_EYE, UPPER_LIP_TOP, UPPER_LIP_BOTTOM, LOWER_LIP_TOP, LOWER_LIP_BOTTOM,
+#   NOSE_BRIDGE, NOSE_BOTTOM, LEFT_CHEEK, RIGHT_CHEEK
+#
+# Each set below maps a contour key to the approximate MediaPipe Face Mesh 468 indices.
+# Eye indices get radius=2 (matching the mobile EYE_CONTOUR_RADIUS constant).
+# All other indices get radius=1 (matching LANDMARK_DOT_RADIUS).
+
+# --- Eyes (radius=2 on mobile) ---
+MLKIT_LEFT_EYE_IDXS = {
+    362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398,
+}
+MLKIT_RIGHT_EYE_IDXS = {
+    33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246,
+}
+MLKIT_EYE_IDXS = MLKIT_LEFT_EYE_IDXS | MLKIT_RIGHT_EYE_IDXS
+
+# --- Face oval (radius=1 on mobile) ---
+MLKIT_FACE_OVAL_IDXS = {
+    10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+    397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+    172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109,
+}
+
+# --- Eyebrows (radius=1 on mobile) ---
+MLKIT_LEFT_EYEBROW_TOP_IDXS = {276, 283, 282, 295, 285}
+MLKIT_LEFT_EYEBROW_BOTTOM_IDXS = {300, 293, 334, 296, 336}
+MLKIT_RIGHT_EYEBROW_TOP_IDXS = {46, 53, 52, 65, 55}
+MLKIT_RIGHT_EYEBROW_BOTTOM_IDXS = {70, 63, 105, 66, 107}
+
+# --- Lips / mouth (radius=1 on mobile) ---
+MLKIT_UPPER_LIP_TOP_IDXS = {61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291}
+MLKIT_UPPER_LIP_BOTTOM_IDXS = {78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308}
+MLKIT_LOWER_LIP_TOP_IDXS = {78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308}
+MLKIT_LOWER_LIP_BOTTOM_IDXS = {61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291}
+
+# --- Nose (radius=1 on mobile) ---
+MLKIT_NOSE_BRIDGE_IDXS = {168, 6, 197, 195, 5}
+MLKIT_NOSE_BOTTOM_IDXS = {48, 115, 220, 45, 4, 275, 440, 344, 278}
+
+# --- Cheeks (radius=1 on mobile) ---
+MLKIT_LEFT_CHEEK_IDXS = {330}
+MLKIT_RIGHT_CHEEK_IDXS = {101}
+
+# Combined set of ALL contour indices drawn on mobile
+MLKIT_APPROX_INDICES = (
+    MLKIT_EYE_IDXS
+    | MLKIT_FACE_OVAL_IDXS
+    | MLKIT_LEFT_EYEBROW_TOP_IDXS
+    | MLKIT_LEFT_EYEBROW_BOTTOM_IDXS
+    | MLKIT_RIGHT_EYEBROW_TOP_IDXS
+    | MLKIT_RIGHT_EYEBROW_BOTTOM_IDXS
+    | MLKIT_UPPER_LIP_TOP_IDXS
+    | MLKIT_UPPER_LIP_BOTTOM_IDXS
+    | MLKIT_LOWER_LIP_TOP_IDXS
+    | MLKIT_LOWER_LIP_BOTTOM_IDXS
+    | MLKIT_NOSE_BRIDGE_IDXS
+    | MLKIT_NOSE_BOTTOM_IDXS
+    | MLKIT_LEFT_CHEEK_IDXS
+    | MLKIT_RIGHT_CHEEK_IDXS
+)
 
 
 def _normalized_to_pixel_coordinates(
@@ -43,12 +106,16 @@ def draw_and_save_face_mesh(
     image_drawing_tool = image_bgr.copy()
     img_h, img_w, _ = image_bgr.shape
 
-    # Draw all landmarks as mesh points.
+    # Draw only MLKit-matching contour landmark indices (Section 3 of DEVELOPMENT_GUIDE.md).
+    # Skipping indices not in MLKIT_APPROX_INDICES keeps training images visually identical
+    # to the dot-stamped buffers the mobile app sends to the model at inference time.
     for i, landmark in enumerate(face_landmarks):
+        if i not in MLKIT_APPROX_INDICES:
+            continue
         point = _normalized_to_pixel_coordinates(landmark.x, landmark.y, img_w, img_h)
         if point is None:
             continue
-        radius = 2 if i in all_chosen_idxs else 1
+        radius = 2 if i in MLKIT_EYE_IDXS else 1
         cv2.circle(image_drawing_tool, point, radius, (255, 255, 255), -1)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,7 +142,7 @@ def preprocess_dataset(
     # arg_name: TypeHint = Default_Value
     raw_images_dir: Path = RAW_IMAGES_DIR,
     cascade_path: Path = CASCADE_PATH,
-    output_dir: Path = PROCESSED_DIR,
+    output_dir: Path = PROCESSED_BASE_DIR,
     task_model_path: Path = FACE_LANDMARKER_TASK_PATH,
 ) -> int: # return integer
     raw_images_dir = Path(raw_images_dir)
@@ -144,21 +211,36 @@ def preprocess_dataset(
     return total_written
 
 
+def _make_dated_output_dir(base: Path) -> Path:
+    """Create a date-stamped subfolder under the processed base directory."""
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    dated = base / f"processed_{stamp}"
+    dated.mkdir(parents=True, exist_ok=True)
+    return dated
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Preprocess drowsiness dataset images.")
     parser.add_argument("--raw-dir", type=Path, default=RAW_IMAGES_DIR)
     parser.add_argument("--cascade", type=Path, default=CASCADE_PATH)
-    parser.add_argument("--output-dir", type=Path, default=PROCESSED_DIR)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Explicit output directory. If omitted a date-stamped folder is created under processed/.",
+    )
     parser.add_argument("--task-model", type=Path, default=FACE_LANDMARKER_TASK_PATH)
     args = parser.parse_args()
+
+    output_dir = args.output_dir if args.output_dir else _make_dated_output_dir(PROCESSED_BASE_DIR)
 
     total = preprocess_dataset(
         raw_images_dir=args.raw_dir,
         cascade_path=args.cascade,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         task_model_path=args.task_model,
     )
-    print(f"Preprocessing complete. Wrote {total} images to {args.output_dir}")
+    print(f"Preprocessing complete. Wrote {total} images to {output_dir}")
 
 
 if __name__ == "__main__":
