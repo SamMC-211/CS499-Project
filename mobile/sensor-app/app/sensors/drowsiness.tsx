@@ -43,6 +43,15 @@ type UiPrediction = {
 const PROCESS_EVERY_N_FRAMES = 5;
 const MODEL_INPUT_SIZE = 145;
 
+// how many recent scores to average together before making a drowsy/active decision
+// higher = smoother but slower to react, lower = more responsive but flickery
+const SMOOTHING_WINDOW_SIZE = 10;
+
+// decision boundary for the smoothed score (sigmoid output averaged over window)
+// scores below this = Fatigue, above = Active
+// default sigmoid midpoint is 0.5 but can be tuned if model leans one way
+const DROWSY_THRESHOLD = 0.45;
+
 // Item 3: Dot radii matched to training preprocess.py draw_and_save_face_mesh().
 // Training draws radius=2 for eye landmark indices and radius=1 for all others.
 // We mirror that split here using the face detector's contour key as a proxy.
@@ -180,10 +189,35 @@ export default function DrowsinessScreen() {
         },
     );
 
+    // ring buffer holding the last N raw sigmoid scores from the model
+    // used to compute a rolling average so one weird frame cant flip the label
+    const scoreBuffer = useRef<number[]>([]);
+
     const updatePredictionOnJs = useMemo(
         () =>
-            Worklets.createRunOnJS((next: UiPrediction) => {
-                setPrediction(next);
+            Worklets.createRunOnJS((rawScore: number, hasFace: boolean) => {
+                if (!hasFace) {
+                    // no face = clear the buffer so stale scores dont carry over
+                    scoreBuffer.current = [];
+                    setPrediction({ label: 'No Face', score: 0, hasFace: false });
+                    return;
+                }
+
+                // push new score into ring buffer, drop oldest if full
+                const buf = scoreBuffer.current;
+                buf.push(rawScore);
+                if (buf.length > SMOOTHING_WINDOW_SIZE) {
+                    buf.shift(); // drop oldest score
+                }
+
+                // average all scores in the buffer for a smoothed prediction
+                const smoothed = buf.reduce((sum, s) => sum + s, 0) / buf.length;
+
+                // classify using the tunable threshold instead of hard 0.5
+                const classIndex = smoothed >= DROWSY_THRESHOLD ? 1 : 0;
+                const label = labels.class_names[classIndex] ?? 'Unknown';
+
+                setPrediction({ label, score: smoothed, hasFace: true });
             }),
         [],
     );
@@ -247,14 +281,10 @@ export default function DrowsinessScreen() {
             // Step 1: detect face bounding box using MLKit via face detector plugin
             const faces = detectFaces(frame) as Face[];
 
-            // no face found, update UI or skip
+            // no face found, clear smoothing buffer and update UI
             if (!faces || faces.length === 0) {
                 updateLandmarks([]);
-                updatePredictionOnJs({
-                    label: 'No Face',
-                    score: 0,
-                    hasFace: false,
-                });
+                updatePredictionOnJs(0, false);
                 return;
             }
 
@@ -289,8 +319,9 @@ export default function DrowsinessScreen() {
             );
 
             // Step 4: Crop and resize frame to MODEL_INPUT_SIZE using the resize plugin.
-            // pixelFormat 'rgb' and dataType 'float32' give us a Float32Array in [0, 255] range.
-            // (The Rescaling layer inside the TFLite model handles the /255 normalization.)
+            // pixelFormat 'rgb' and dataType 'float32' give us a Float32Array in [0, 1] range.
+            // We scale to [0, 255] after rotation so the model's Rescaling(1/255) layer
+            // receives the same value distribution as training data.
             const cropped = resize(frame, {
                 crop: {
                     x: aFaceX.value,
@@ -306,6 +337,13 @@ export default function DrowsinessScreen() {
             // Rotate 90° CCW so the landscape-right crop becomes an upright face
             // matching the orientation of the training images.
             const input = rotateBuffer90CCW(cropped, MODEL_INPUT_SIZE);
+
+            // resize plugin gives us floats in [0, 1] but the model has a Rescaling(1/255)
+            // layer baked in (see train.py) so it expects [0, 255] input like training data.
+            // without this the model was getting near-zero values and always predicting drowsy
+            for (let i = 0; i < input.length; i++) {
+                input[i] = input[i] * 255.0;
+            }
 
             // PREDICT FIX ATTEMOT
             // const face = faces[0];
@@ -419,14 +457,9 @@ export default function DrowsinessScreen() {
             const out0 = outputs?.[0] as number[] | undefined;
             const score = Number(out0?.[0] ?? 0);
 
-            // Item 2: The model's final layer is Dense(1, sigmoid).
-            // Sigmoid output approaches 1.0 for class index 1 (Active Subjects)
-            // and approaches 0.0 for class index 0 (Fatigue Subjects).
-            // Threshold 0.5 is the natural decision boundary for a sigmoid classifier.
-            const classIndex = score >= 0.5 ? 1 : 0;
-            const label = labels.class_names[classIndex] ?? 'Unknown';
-
-            updatePredictionOnJs({ label, score, hasFace: true });
+            // send the raw score to JS side where it gets averaged with recent scores
+            // smoothing + threshold logic lives in updatePredictionOnJs callback above
+            updatePredictionOnJs(score, true);
         },
         [detectFaces, model, debugEnabledShared],
     );
@@ -508,7 +541,7 @@ export default function DrowsinessScreen() {
                         {prediction.score.toFixed(3)}
                     </Text>
                     <Text style={styles.badgeMeta}>
-                        {prediction.hasFace ? 'Face Detected' : 'No Face'}
+                        {prediction.hasFace ? 'Face Detected (smoothed)' : 'No Face'}
                     </Text>
                 </View>
 

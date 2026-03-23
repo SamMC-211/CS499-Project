@@ -2,26 +2,6 @@
 This project is to explore how to build a mobile application using **React Native** that can collect sensor data and apply machine learning–based activity recognition techniques.   The core idea is to leverage mobile device sensors to capture user behavioral signals and use machine learning models to classify certain states or activities.
 
 
-**Expo Notes** 
-https://docs.expo.dev/develop/tools/
-- npm run android
-- npm run ios # you need to use macOS to build the iOS project - use the Expo app if you need to do iOS development without a Mac
-- npm run web
-- npx expo start	Starts the development server (whether you are using a development build or Expo Go).
-- npx expo prebuild	Generates native Android and iOS directories using Prebuild.
-- npx expo run:android	Compiles native Android app locally.
-- npx expo run:ios	Compiles native iOS app locally.
-- npx expo install package-name	Used to install a new library or validate and update specific libraries in your project by adding --fix option to this command.
-- npx expo lint	Setup and configures ESLint. If ESLint is already configured, this command will lint your project files.
-
-# Expo Docs
----
-**Detailed Camera Use** 
-https://github.com/expo/examples/blob/master/with-camera/App.tsx
-**Accelerometer**
-https://docs.expo.dev/versions/latest/sdk/accelerometer/
-
-
 # Command List
 - **Create Virtual Env For Python Dependencies**
     - `python -3.12 -m venv venv(can be whatever you want to name env)`
@@ -53,6 +33,9 @@ https://docs.expo.dev/versions/latest/sdk/accelerometer/
     - Copy artifacts: `cp model_training/artifacts/drowsiness_cnn.tflite assets/ml/drowsiness_cnn.tflite`
     - Copy labels: `cp model_training/artifacts/labels.json assets/ml/labels.json`
     - Clean & rebuild: `npx expo prebuild --clean && npx expo run:android --variant release`
+- **Rebuild Steps**
+
+# Building App for Remote Development with TailScale
 - **Build Release APK**
     ```bash
     cd mobile/sensor-app
@@ -93,6 +76,78 @@ https://docs.expo.dev/versions/latest/sdk/accelerometer/
         ```
     4. Images are saved to: `mobile/sensor-app/model_training/debugging/debug_pngs/`
 
+## Build Process Breakdown
+
+There are 3 layers to the build and you only need to redo the layers that are affected by your changes. Listed from heaviest to lightest:
+
+### 1. `npx expo prebuild --clean` — Regenerate native project from scratch
+**When you need it:** When you change anything in the native config layer
+- Changed `app.json` (plugins, permissions, SDK version, package name)
+- Added/removed/updated a native module in `package.json` (like react-native-vision-camera, react-native-fast-tflite, etc)
+- Something in `android/` got corrupted or out of sync
+
+**What it does:** Deletes the entire `android/` folder and regenerates it from `app.json` + expo plugins. This links all native modules, sets permissions, configures gradle, etc. Its basically a fresh native project scaffolded from your expo config.
+
+**Command:**
+```bash
+cd mobile/sensor-app
+npx expo prebuild --clean
+npx expo run:android --variant release
+```
+
+**Note:** This will wipe any manual edits you made inside `android/` (like manually editing build.gradle). Those changes need to go in `app.json` plugins instead so prebuild can recreate them.
+
+### 2. `npx expo run:android --variant release` — Compile native + bundle JS
+**When you need it:** When you change TypeScript/JS code OR swap out asset files
+- Changed any `.tsx`/`.ts`/`.js` file (like drowsiness.tsx)
+- Replaced the `.tflite` model file in `assets/ml/`
+- Replaced `labels.json` or other bundled assets
+- Basically any time you change code or assets but NOT native config
+
+**What it does:** Two things happen in sequence:
+1. **Metro bundler** compiles all your TypeScript/JS into a single bundle and collects assets (including the .tflite file)
+2. **Gradle** compiles the native Android code, packages the JS bundle + assets into an APK, and installs it
+
+If native code hasnt changed, gradle reuses most of its cache so this is way faster on repeat runs (~25s vs ~2min). The APK ends up at `android/app/build/outputs/apk/release/app-release.apk`.
+
+**Command:**
+```bash
+cd mobile/sensor-app
+npx expo run:android --variant release
+```
+
+**Debug vs Release:** `--variant release` makes an optimized APK you can install on any phone. Without it you get a debug build that needs a dev server running (metro). For testing on your phone you almost always want release.
+
+### 3. Metro only (dev server) — Hot reload JS changes
+**When you need it:** Only during active development when you have a debug build connected
+- Changed TypeScript/JS code and want to see it instantly without rebuilding
+
+**What it does:** Recompiles just the changed JS and pushes it to the running debug app over the network. Does NOT work with release builds.
+
+**Command:**
+```bash
+cd mobile/sensor-app
+npx expo start --clear   # --clear wipes metro cache if things are stale
+```
+
+### Quick reference — what changed → what to run
+
+| What you changed | Command needed |
+|---|---|
+| `.tsx`/`.ts` code (like drowsiness.tsx) | `npx expo run:android --variant release` |
+| `.tflite` model or `labels.json` | `npx expo run:android --variant release` |
+| `app.json` (plugins, permissions, etc) | `npx expo prebuild --clean` then `run:android` |
+| Added/removed npm package with native code | `npm install` then `npx expo prebuild --clean` then `run:android` |
+| `android/` is broken or weird build errors | `npx expo prebuild --clean` then `run:android` |
+| Python training code only (preprocess/train) | No app build needed, just retrain and copy artifacts |
+
+### Common gotcha — stale .tflite in cache
+If you retrained and copied a new `.tflite` to `assets/ml/` but the app still uses the old model, metro or gradle might have cached the old one. Fix with:
+```bash
+npx expo start --clear    # ctrl+c after it starts, just wipes metro cache
+npx expo run:android --variant release
+```
+Or the nuclear option: `npx expo prebuild --clean && npx expo run:android --variant release`
 
 # Week 3 Meeting Notes
 - Available MediaPipe facial detection models
@@ -207,7 +262,7 @@ This week I've spent attempting to retrain the model to be accurate on mobile.
     - Fixed preprocessing to include missing landmark groups and timestamp processed folders
 - Retrained model after including missing MLKit landmark groups
 
-Model Versions (In Artifacts)
+**Model Versions (In Artifacts)**
 - Drowsiness (Base model using MediaPipe facial landmarking)   
     - Most accurate so far, fluctuating reading
 - Drowsiness 1.0 (Model using MLKit facial landmarking)
@@ -215,7 +270,24 @@ Model Versions (In Artifacts)
 - Drowsiness 2.0 (Model using MLKit including previously missing landmark groups)
     - Updated preprocessing to include all landmark groups
     - Still highly innacurate on mobile
-
 - Created serve.py to download apk remotely after building
-- Drow
-        
+
+
+# Week 8 Meeting Notes
+
+This week I worked on fixing model accuracy on mobile and adding prediction smoothing
+
+- **Fixed input value range mismatch** — `vision-camera-resize-plugin` returns float32 in [0, 1] but the model's Rescaling(1/255) layer expects [0, 255]. Added a `* 255.0` scaling step after rotation, before dot stamping. Before that the model was seeing a nearly black image. 
+- **Added rolling average prediction smoothing** — The raw scores are now averaged over the last 10 frames (SMOOTHING_WINDOW_SIZE) before making a drowsy/active decision. Prevents single frame flickers from swapping the label back and forth
+- **Added tunable drowsy threshold** — (DROWSY_THRESHOLD) constant replaces the hard 0.5 sigmoid midpoint. I adjusted this because the predictions were skewed towards Drowsy.
+- **Score buffer clears on face loss** — when no face is detected the rolling average resets so stale scores dont carry over
+- **Computer Specs** 
+    - **Processor:** AMD AMD RYZEN 7 9800X3D
+    - **RAM:** 32gb G.SKILL 2X D5 6000 C36 FX B
+    - **Graphics Card:** ASUS PRIME RX9070XT
+    - **MotherBoard:** 	ASUS TUF GAMING B650E-E WF
+- **Dataset Size:** processed_2026-03-16_110640  (Fatigue Subjects: 3677, Active Subjects: 3861)
+- **Training Time**
+    - Preprocessing: 4:05
+    - Model Training (20 Epochs): 4:44
+
