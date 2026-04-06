@@ -18,6 +18,7 @@ export default function Index() {
                 <NavButton label='Drowsiness Detection' href='/sensors/drowsiness' primary />
                 <NavButton label='Camera' href='/sensors/camera' />
                 <NavButton label='Accelerometer' href='/sensors/accelerometer' />
+                <NavButton label='Debug Gallery' href='/sensors/debug-gallery' />
             </View>
 
             <Text style={styles.version}>v2.0</Text>

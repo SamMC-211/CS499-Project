@@ -15,6 +15,7 @@ export default function RootLayout() {
       <Stack.Screen name="sensors/drowsiness" options={{ title: 'Detection' }} />
       <Stack.Screen name="sensors/camera" options={{ title: 'Camera' }} />
       <Stack.Screen name="sensors/accelerometer" options={{ title: 'Accelerometer' }} />
+      <Stack.Screen name="sensors/debug-gallery" options={{ title: 'Debug Gallery' }} />
     </Stack>
   );
 }

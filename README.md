@@ -16,6 +16,8 @@ This project is to explore how to build a mobile application using **React Nativ
     - `npx expo prebuild`
     - `npx expo run:android`
     - `npx expo run:android --variant release`
+- **Build APK Only (no device needed)**
+    - `cd mobile/sensor-app/android && ./gradlew assembleRelease`
 - **Pull Debug Files From Mobile** 
     - `adb shell run-as com.anonymous.sensorapp ls files`
     - `adb shell run-as com.anonymous.sensorapp ls files/debug_inputs`
@@ -118,6 +120,13 @@ npx expo run:android --variant release
 
 **Debug vs Release:** `--variant release` makes an optimized APK you can install on any phone. Without it you get a debug build that needs a dev server running (metro). For testing on your phone you almost always want release.
 
+**Building APK only (no device connected):** `npx expo run:android` will try to install the APK on a connected device/emulator and fail if none is found. If you just want to generate the APK file without installing, use gradle directly:
+```bash
+cd mobile/sensor-app/android
+./gradlew assembleRelease
+```
+This skips the device-install step and produces the same APK at `android/app/build/outputs/apk/release/app-release.apk`. Works on any machine with the Android SDK — no phone, USB cable, or emulator needed. You can then transfer the APK to your phone however you like (Tailscale serve, Google Drive, USB, etc).
+
 ### 3. Metro only (dev server) — Hot reload JS changes
 **When you need it:** Only during active development when you have a debug build connected
 - Changed TypeScript/JS code and want to see it instantly without rebuilding
@@ -140,6 +149,7 @@ npx expo start --clear   # --clear wipes metro cache if things are stale
 | Added/removed npm package with native code | `npm install` then `npx expo prebuild --clean` then `run:android` |
 | `android/` is broken or weird build errors | `npx expo prebuild --clean` then `run:android` |
 | Python training code only (preprocess/train) | No app build needed, just retrain and copy artifacts |
+| Any of the above, but no device connected | Use `./gradlew assembleRelease` from `android/` instead of `npx expo run:android` |
 
 ### Common gotcha — stale .tflite in cache
 If you retrained and copied a new `.tflite` to `assets/ml/` but the app still uses the old model, metro or gradle might have cached the old one. Fix with:
@@ -291,3 +301,17 @@ This week I worked on fixing model accuracy on mobile and adding prediction smoo
     - Preprocessing: 4:05
     - Model Training (20 Epochs): 4:44
 
+**Notes for week 9**
+- Look into using 1 additional sensor
+- Look into using driving time to advise drowsiness alert/prediction
+- Add driver alert functionality
+- Add Screenshots to meeting document
+- Work on cleaning up code 
+- Attach the project APK 
+- Create Notes for adapting project to IOS
+
+# Week 9 Meeting Notes
+
+NA
+
+# Week 10 Meeting Notes

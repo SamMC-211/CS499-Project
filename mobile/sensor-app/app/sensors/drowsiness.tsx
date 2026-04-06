@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import {
     ActivityIndicator,
     Pressable,
@@ -7,7 +7,9 @@ import {
     View,
     Dimensions,
     useWindowDimensions,
+    Animated,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import {
     loadTensorflowModel,
     useTensorflowModel,
@@ -51,6 +53,12 @@ const SMOOTHING_WINDOW_SIZE = 10;
 // scores below this = Fatigue, above = Active
 // default sigmoid midpoint is 0.5 but can be tuned if model leans one way
 const DROWSY_THRESHOLD = 0.45;
+
+// Alert escalation tiers — trigger after sustained drowsiness (Fatigue label) for N seconds
+// These only affect visual/haptic UI and do not touch inference logic.
+const ALERT_WARNING_SEC = 3;   // tier 1: badge turns red
+const ALERT_CAUTION_SEC = 5;   // tier 2: haptic vibration pulses
+const ALERT_DANGER_SEC = 8;    // tier 3: full-screen overlay + heavy vibration
 
 // Item 3: Dot radii matched to training preprocess.py draw_and_save_face_mesh().
 // Training draws radius=2 for eye landmark indices and radius=1 for all others.
@@ -193,6 +201,83 @@ export default function DrowsinessScreen() {
     // used to compute a rolling average so one weird frame cant flip the label
     const scoreBuffer = useRef<number[]>([]);
 
+    // --- Alert escalation state ---
+    // Tracks when continuous drowsiness started so we can escalate alerts over time
+    const drowsyStartRef = useRef<number | null>(null);
+    const [alertTier, setAlertTier] = useState<0 | 1 | 2 | 3>(0);
+    const dangerOpacity = useRef(new Animated.Value(0)).current;
+    const hapticIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // Pulsing animation for the danger overlay (tier 3)
+    useEffect(() => {
+        if (alertTier === 3) {
+            const pulse = Animated.loop(
+                Animated.sequence([
+                    Animated.timing(dangerOpacity, { toValue: 0.45, duration: 600, useNativeDriver: true }),
+                    Animated.timing(dangerOpacity, { toValue: 0.15, duration: 600, useNativeDriver: true }),
+                ]),
+            );
+            pulse.start();
+            return () => pulse.stop();
+        } else {
+            dangerOpacity.setValue(0);
+        }
+    }, [alertTier]);
+
+    // Haptic feedback for tiers 2 and 3
+    useEffect(() => {
+        if (hapticIntervalRef.current) {
+            clearInterval(hapticIntervalRef.current);
+            hapticIntervalRef.current = null;
+        }
+
+        if (alertTier === 2) {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            hapticIntervalRef.current = setInterval(() => {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            }, 2000);
+        } else if (alertTier === 3) {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+            hapticIntervalRef.current = setInterval(() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            }, 1000);
+        }
+
+        return () => {
+            if (hapticIntervalRef.current) {
+                clearInterval(hapticIntervalRef.current);
+                hapticIntervalRef.current = null;
+            }
+        };
+    }, [alertTier]);
+
+    // Evaluate alert tier based on how long prediction has been "Fatigue"
+    const evaluateAlertTier = useCallback((label: string) => {
+        const now = Date.now();
+
+        if (label === labels.class_names[0]) {
+            // Fatigue detected
+            if (drowsyStartRef.current === null) {
+                drowsyStartRef.current = now;
+            }
+            const elapsed = (now - drowsyStartRef.current) / 1000;
+
+            if (elapsed >= ALERT_DANGER_SEC) {
+                setAlertTier(3);
+            } else if (elapsed >= ALERT_CAUTION_SEC) {
+                setAlertTier(2);
+            } else if (elapsed >= ALERT_WARNING_SEC) {
+                setAlertTier(1);
+            } else {
+                setAlertTier(0);
+            }
+        } else {
+            // Active or no face — reset
+            drowsyStartRef.current = null;
+            setAlertTier(0);
+        }
+    }, []);
+
     const updatePredictionOnJs = useMemo(
         () =>
             Worklets.createRunOnJS((rawScore: number, hasFace: boolean) => {
@@ -200,6 +285,7 @@ export default function DrowsinessScreen() {
                     // no face = clear the buffer so stale scores dont carry over
                     scoreBuffer.current = [];
                     setPrediction({ label: 'No Face', score: 0, hasFace: false });
+                    evaluateAlertTier('No Face');
                     return;
                 }
 
@@ -218,8 +304,9 @@ export default function DrowsinessScreen() {
                 const label = labels.class_names[classIndex] ?? 'Unknown';
 
                 setPrediction({ label, score: smoothed, hasFace: true });
+                evaluateAlertTier(label);
             }),
-        [],
+        [evaluateAlertTier],
     );
 
     // DEBUG
@@ -530,11 +617,26 @@ export default function DrowsinessScreen() {
                     ))}
                 </Svg>
 
-                <View style={styles.badge}>
+                {/* Tier 3 danger: full-screen pulsing red overlay */}
+                {alertTier === 3 && (
+                    <Animated.View
+                        pointerEvents="none"
+                        style={[StyleSheet.absoluteFill, styles.dangerOverlay, { opacity: dangerOpacity }]}
+                    />
+                )}
+
+                <View style={[
+                    styles.badge,
+                    alertTier >= 1 && styles.badgeWarning,
+                    alertTier >= 2 && styles.badgeCaution,
+                    alertTier >= 3 && styles.badgeDanger,
+                ]}>
                     <Text style={styles.badgeTitle}>Driver State</Text>
                     <Text style={[
                         styles.badgeLabel,
-                        { color: prediction.label === 'Fatigue Subjects' ? '#F87171' : '#93C5FD' }
+                        { color: prediction.label === 'Fatigue Subjects'
+                            ? (alertTier >= 2 ? '#FEF08A' : '#F87171')
+                            : '#93C5FD' }
                     ]}>{prediction.label}</Text>
                     <View style={styles.badgeDivider} />
                     <Text style={styles.badgeScore}>
@@ -543,6 +645,13 @@ export default function DrowsinessScreen() {
                     <Text style={styles.badgeMeta}>
                         {prediction.hasFace ? 'Face Detected (smoothed)' : 'No Face'}
                     </Text>
+                    {alertTier >= 1 && (
+                        <Text style={styles.alertText}>
+                            {alertTier === 1 && '⚠ Drowsiness Warning'}
+                            {alertTier === 2 && '⚠ Caution — Stay Alert!'}
+                            {alertTier === 3 && '🚨 DANGER — Pull Over!'}
+                        </Text>
+                    )}
                 </View>
 
                 <Pressable
@@ -643,5 +752,31 @@ const styles = StyleSheet.create({
     },
     debugButtonTextActive: {
         color: '#93C5FD',
+    },
+    // Alert escalation styles
+    dangerOverlay: {
+        backgroundColor: '#DC2626',
+    },
+    badgeWarning: {
+        borderColor: 'rgba(248, 113, 113, 0.6)',
+        backgroundColor: 'rgba(127, 29, 29, 0.85)',
+    },
+    badgeCaution: {
+        borderColor: '#FBBF24',
+        backgroundColor: 'rgba(146, 64, 14, 0.88)',
+        borderWidth: 2,
+    },
+    badgeDanger: {
+        borderColor: '#EF4444',
+        backgroundColor: 'rgba(153, 27, 27, 0.92)',
+        borderWidth: 2,
+    },
+    alertText: {
+        color: '#FEF08A',
+        fontSize: 16,
+        fontWeight: '700',
+        textAlign: 'center',
+        marginTop: 8,
+        letterSpacing: 0.5,
     },
 });
