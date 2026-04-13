@@ -3,6 +3,8 @@ This project is to explore how to build a mobile application using **React Nativ
 
 
 # Command List
+
+This is a list of commands relevant for building and debugging this project. These commands may be referenced at other points in this README document.
 - **Create Virtual Env For Python Dependencies**
     - `python -3.12 -m venv venv(can be whatever you want to name env)`
 - **Import Python Dependencies** 
@@ -11,8 +13,8 @@ This project is to explore how to build a mobile application using **React Nativ
 - **To Activate Python (venv)**
     - `source venv/Scripts/activate`
 - **Run Python Scripts**
-    - python script.py
-- **Build Expo to Android**
+    - `python script.py`
+- **Build Expo to Android (Will build and install on connected android device)**
     - `npx expo prebuild`
     - `npx expo run:android`
     - `npx expo run:android --variant release`
@@ -27,6 +29,10 @@ This project is to explore how to build a mobile application using **React Nativ
     - `adb shell run-as com.anonymous.sensorapp rm -rf files/debug_inputs`
 - **Android Debug**
     - `adb logcat | grep com.anonymous.sensorapp`
+    - List adb devices: `adb devices`
+        - Formatted: `<device_serial> <status>`
+    - Remove adb device: `adb -s <device_serial> emu kill`
+        - Might have to kill task: qemu-system-x86
 - **Create Temp X Drive for Building**
     - `subst X: C:\Users\samsu\CS499-Project`   
 - **For full model training pipeline**
@@ -50,11 +56,12 @@ This project is to explore how to build a mobile application using **React Nativ
     npx expo prebuild --clean && npx expo run:android --variant release
     ```
 
-- **Serve Release APK to Phone via Tailscale**
-    1. Build the release APK (see above)
+- **Serve APK to Phone via Tailscale**
+    1. Build the APK (see above)
     2. From the project root, serve with:
         ```bash
-        python serve.py
+        python serve.py            # Serve the release APK (default)
+        python serve.py --debug    # Serve the debug APK instead
         ```
     3. Get your desktop's Tailscale IP:
         ```bash
@@ -62,7 +69,8 @@ This project is to explore how to build a mobile application using **React Nativ
         ```
     4. On your phone (connected to the same tailnet), open a browser and go to:
         ```
-        http://<desktop-tailscale-ip>:8080/app-release.apk
+        http://<desktop-tailscale-ip>:8080/app-release.apk   # if serving release
+        http://<desktop-tailscale-ip>:8080/app-debug.apk     # if serving debug
         ```
     5. Android will prompt you to install. Enable "Install unknown apps" for your browser in **Settings > Apps > [browser] > Install unknown apps** if not already enabled.
 
@@ -288,6 +296,7 @@ This week I've spent attempting to retrain the model to be accurate on mobile.
 This week I worked on fixing model accuracy on mobile and adding prediction smoothing
 
 - **Fixed input value range mismatch** — `vision-camera-resize-plugin` returns float32 in [0, 1] but the model's Rescaling(1/255) layer expects [0, 255]. Added a `* 255.0` scaling step after rotation, before dot stamping. Before that the model was seeing a nearly black image. 
+![Example Image](/)
 - **Added rolling average prediction smoothing** — The raw scores are now averaged over the last 10 frames (SMOOTHING_WINDOW_SIZE) before making a drowsy/active decision. Prevents single frame flickers from swapping the label back and forth
 - **Added tunable drowsy threshold** — (DROWSY_THRESHOLD) constant replaces the hard 0.5 sigmoid midpoint. I adjusted this because the predictions were skewed towards Drowsy.
 - **Score buffer clears on face loss** — when no face is detected the rolling average resets so stale scores dont carry over

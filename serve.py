@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Utility script for serving the release APK and pulling debug images from mobile.
+Utility script for serving the release/debug APK and pulling debug images from mobile.
 
 Usage:
-    python serve.py              # Serve the release APK on port 8080
-    python serve.py pull         # Pull debug inputs from device via adb and render as PNGs
-    python serve.py pull --clean # Pull debug inputs and clear them from the device
+    python serve.py                # Serve the release APK on port 8080
+    python serve.py --debug        # Serve the debug APK on port 8080
+    python serve.py pull           # Pull debug inputs from device via adb and render as PNGs
+    python serve.py pull --clean   # Pull debug inputs and clear them from the device
 """
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 import json
@@ -18,15 +19,20 @@ import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-APK_DIR = PROJECT_ROOT / "mobile" / "sensor-app" / "android" / "app" / "build" / "outputs" / "apk" / "release"
+APK_BASE = PROJECT_ROOT / "mobile" / "sensor-app" / "android" / "app" / "build" / "outputs" / "apk"
 DEBUG_OUT = PROJECT_ROOT / "mobile" / "sensor-app" / "model_training" / "debugging" / "debug_pngs"
 PACKAGE = "com.anonymous.sensorapp"
 
 
-def serve_apk():
-    os.chdir(APK_DIR)
+def serve_apk(variant: str = "release"):
+    apk_dir = APK_BASE / variant
+    if not apk_dir.exists():
+        print(f"Error: APK directory not found: {apk_dir}")
+        print(f"Build the {variant} APK first (e.g., ./gradlew assemble{variant.capitalize()})")
+        sys.exit(1)
+    os.chdir(apk_dir)
     SimpleHTTPRequestHandler.extensions_map['.apk'] = 'application/vnd.android.package-archive'
-    print(f"Serving APK from {APK_DIR} on port 8080...")
+    print(f"Serving {variant} APK from {apk_dir} on port 8080...")
     HTTPServer(('0.0.0.0', 8080), SimpleHTTPRequestHandler).serve_forever()
 
 
@@ -123,4 +129,5 @@ if __name__ == "__main__":
         clean = "--clean" in sys.argv
         pull_debug(clean=clean)
     else:
-        serve_apk()
+        variant = "debug" if "--debug" in sys.argv else "release"
+        serve_apk(variant=variant)
