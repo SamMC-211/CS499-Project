@@ -58,9 +58,17 @@ mobile/sensor-app/model_training/processed/
 mobile/sensor-app/model_training/processed_OLD/
 mobile/sensor-app/model_training/artifacts/
 mobile/sensor-app/model_training/EXPO_REALTIME_INTEGRATION.md
+mobile/sensor-app/model_training/accelerometer/README.md
 
 # Code documents
 REMOTE_DEV_SETUP.md
 DEVELOPMENT_GUIDE.md
 CLAUDE_INSTRUCTIONS.md
 MODEL_ACCURACY_FIX_GUIDE.md
+ACCELEROMETER_PIPELINE.md
+PROJECT_NOTES_2026-04-19.md
+REMOTE_DEV_SETUP.md
+BACKGROUND_RUNNING.md
+
+# Misc.
+mobile/sensor-app/assets/audio/generate_eas_tone.py

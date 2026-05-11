@@ -1,6 +1,14 @@
-import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
+import React, {
+    useEffect,
+    useMemo,
+    useState,
+    useRef,
+    useCallback,
+} from 'react';
 import {
     ActivityIndicator,
+    AppState,
+    AppStateStatus,
     Pressable,
     StyleSheet,
     Text,
@@ -10,6 +18,13 @@ import {
     Animated,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import { useAudioPlayer } from 'expo-audio';
+import { router } from 'expo-router';
+import { useBackgroundMode } from '../../contexts/BackgroundContext';
+import {
+    showAlertOverlay,
+    hideAlertOverlay,
+} from '../../native/BackgroundDetection';
 import {
     loadTensorflowModel,
     useTensorflowModel,
@@ -56,9 +71,9 @@ const DROWSY_THRESHOLD = 0.45;
 
 // Alert escalation tiers — trigger after sustained drowsiness (Fatigue label) for N seconds
 // These only affect visual/haptic UI and do not touch inference logic.
-const ALERT_WARNING_SEC = 3;   // tier 1: badge turns red
-const ALERT_CAUTION_SEC = 5;   // tier 2: haptic vibration pulses
-const ALERT_DANGER_SEC = 8;    // tier 3: full-screen overlay + heavy vibration
+const ALERT_WARNING_SEC = 3; // tier 1: badge turns red
+const ALERT_CAUTION_SEC = 5; // tier 2: haptic vibration pulses
+const ALERT_DANGER_SEC = 8; // tier 3: full-screen overlay + heavy vibration
 
 // Item 3: Dot radii matched to training preprocess.py draw_and_save_face_mesh().
 // Training draws radius=2 for eye landmark indices and radius=1 for all others.
@@ -147,7 +162,10 @@ export default function DrowsinessScreen() {
     const [landmarks, setLandmarks] = useState<{ x: number; y: number }[]>([]); //points from face detector
     const [overlaySize, setOverlaySize] = useState({ width: 0, height: 0 }); //View dimensions
     const [debugEnabled, setDebugEnabled] = useState(false);
-    const debugEnabledShared = useMemo(() => Worklets.createSharedValue(false), []);
+    const debugEnabledShared = useMemo(
+        () => Worklets.createSharedValue(false),
+        [],
+    );
 
     const modelPlugin = useTensorflowModel(
         require('../../assets/ml/drowsiness_cnn.tflite'),
@@ -206,15 +224,84 @@ export default function DrowsinessScreen() {
     const drowsyStartRef = useRef<number | null>(null);
     const [alertTier, setAlertTier] = useState<0 | 1 | 2 | 3>(0);
     const dangerOpacity = useRef(new Animated.Value(0)).current;
-    const hapticIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const hapticIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
+        null,
+    );
+
+    // --- Background mode integration ---
+    const { enabled: backgroundEnabled } = useBackgroundMode();
+    const [appActive, setAppActive] = useState(
+        AppState.currentState === 'active',
+    );
+    useEffect(() => {
+        const sub = AppState.addEventListener('change', (s: AppStateStatus) =>
+            setAppActive(s === 'active'),
+        );
+        return () => sub.remove();
+    }, []);
+    // Keep frame processor running when: app foreground OR background-mode is on.
+    const cameraIsActive = appActive || backgroundEnabled;
+
+    // --- EAS-style audio alert on tier 3 ---
+    const easPlayer = useAudioPlayer(
+        require('../../assets/audio/eas_alert.wav'),
+    );
+    useEffect(() => {
+        if (!easPlayer) return;
+        easPlayer.loop = true;
+        easPlayer.volume = 1.0;
+    }, [easPlayer]);
+
+    useEffect(() => {
+        if (!easPlayer) return;
+        if (alertTier === 3) {
+            try {
+                easPlayer.seekTo(0);
+                easPlayer.play();
+            } catch (e) {
+                console.warn('EAS audio play failed', e);
+            }
+        } else {
+            try {
+                easPlayer.pause();
+                easPlayer.seekTo(0);
+            } catch {
+                // ignore — pause on a not-yet-loaded player is fine
+            }
+        }
+    }, [alertTier, easPlayer]);
+
+    // Tier-3 system-wide overlay (draws over other apps via WindowManager).
+    // Resolves to no-op if SYSTEM_ALERT_WINDOW was not granted. Mirrors the
+    // in-app red overlay so the alert is visible whether the user is on this
+    // screen, in PiP, on the lock screen, or in another app entirely.
+    useEffect(() => {
+        if (alertTier === 3) {
+            void showAlertOverlay();
+        } else {
+            void hideAlertOverlay();
+        }
+        return () => {
+            // Defensive: if the screen unmounts mid-alert, take the overlay down.
+            void hideAlertOverlay();
+        };
+    }, [alertTier]);
 
     // Pulsing animation for the danger overlay (tier 3)
     useEffect(() => {
         if (alertTier === 3) {
             const pulse = Animated.loop(
                 Animated.sequence([
-                    Animated.timing(dangerOpacity, { toValue: 0.45, duration: 600, useNativeDriver: true }),
-                    Animated.timing(dangerOpacity, { toValue: 0.15, duration: 600, useNativeDriver: true }),
+                    Animated.timing(dangerOpacity, {
+                        toValue: 0.45,
+                        duration: 600,
+                        useNativeDriver: true,
+                    }),
+                    Animated.timing(dangerOpacity, {
+                        toValue: 0.15,
+                        duration: 600,
+                        useNativeDriver: true,
+                    }),
                 ]),
             );
             pulse.start();
@@ -224,7 +311,7 @@ export default function DrowsinessScreen() {
         }
     }, [alertTier]);
 
-    // Haptic feedback for tiers 2 and 3
+    // Haptic feedback for tiers 2 and 3 (Makes phone vibrate)
     useEffect(() => {
         if (hapticIntervalRef.current) {
             clearInterval(hapticIntervalRef.current);
@@ -234,7 +321,9 @@ export default function DrowsinessScreen() {
         if (alertTier === 2) {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
             hapticIntervalRef.current = setInterval(() => {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                Haptics.notificationAsync(
+                    Haptics.NotificationFeedbackType.Warning,
+                );
             }, 2000);
         } else if (alertTier === 3) {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -284,7 +373,11 @@ export default function DrowsinessScreen() {
                 if (!hasFace) {
                     // no face = clear the buffer so stale scores dont carry over
                     scoreBuffer.current = [];
-                    setPrediction({ label: 'No Face', score: 0, hasFace: false });
+                    setPrediction({
+                        label: 'No Face',
+                        score: 0,
+                        hasFace: false,
+                    });
                     evaluateAlertTier('No Face');
                     return;
                 }
@@ -297,7 +390,8 @@ export default function DrowsinessScreen() {
                 }
 
                 // average all scores in the buffer for a smoothed prediction
-                const smoothed = buf.reduce((sum, s) => sum + s, 0) / buf.length;
+                const smoothed =
+                    buf.reduce((sum, s) => sum + s, 0) / buf.length;
 
                 // classify using the tunable threshold instead of hard 0.5
                 const classIndex = smoothed >= DROWSY_THRESHOLD ? 1 : 0;
@@ -344,7 +438,6 @@ export default function DrowsinessScreen() {
     const aFaceH = useMemo(() => Worklets.createSharedValue(0), []);
     const aFaceX = useMemo(() => Worklets.createSharedValue(0), []);
     const aFaceY = useMemo(() => Worklets.createSharedValue(0), []);
-    // const aRot = useMemo(() => Worklets.createSharedValue(0), []);
 
     //declare frame processor function passed to camera
     const frameProcessor = useFrameProcessor(
@@ -374,16 +467,6 @@ export default function DrowsinessScreen() {
                 updatePredictionOnJs(0, false);
                 return;
             }
-
-            // DEBUG
-            // const fullInput = resize(frame, {
-            //     scale: { width: 145, height: 145 },
-            //     pixelFormat: 'rgb',
-            //     dataType: 'float32',
-            // });
-            // if (frameCounter.value % DEBUG_SAVE_EVERY_N === 0) {
-            //     saveInputOnJs(Array.from(fullInput)); // input is Float32Array
-            // }
 
             // each face has bounds(x, y, w, h) and landmarks(LEFT_EYE, ...)
             const face = faces[0];
@@ -422,7 +505,6 @@ export default function DrowsinessScreen() {
             });
 
             // Rotate 90° CCW so the landscape-right crop becomes an upright face
-            // matching the orientation of the training images.
             const input = rotateBuffer90CCW(cropped, MODEL_INPUT_SIZE);
 
             // resize plugin gives us floats in [0, 1] but the model has a Rescaling(1/255)
@@ -432,40 +514,9 @@ export default function DrowsinessScreen() {
                 input[i] = input[i] * 255.0;
             }
 
-            // PREDICT FIX ATTEMOT
-            // const face = faces[0];
-            // const mirrorX = true; // front cam
-            // const o = String(frame.orientation);
-
-            // // 1) Convert face bounds to frame coords by transforming all 4 corners
-            // const b = face.bounds;
-            // const c1 = toFramePoint({ x: b.x, y: b.y }, frame.width, frame.height, o, mirrorX);
-            // const c2 = toFramePoint({ x: b.x + b.width, y: b.y }, frame.width, frame.height, o, mirrorX);
-            // const c3 = toFramePoint({ x: b.x, y: b.y + b.height }, frame.width, frame.height, o, mirrorX);
-            // const c4 = toFramePoint({ x: b.x + b.width, y: b.y + b.height }, frame.width, frame.height, o, mirrorX);
-            // const crop = rectFromCorners([c1, c2, c3, c4], frame.width, frame.height);
-
-            // // 2) Crop frame in frame-buffer space
-            // const input = resize(frame, {
-            //     crop,
-            //     scale: { width: MODEL_INPUT_SIZE, height: MODEL_INPUT_SIZE },
-            //     pixelFormat: 'rgb',
-            //     dataType: 'float32',
-            // });
-
-            // DEBUG
-            // if (frameCounter.value % DEBUG_SAVE_EVERY_N === 0) {
-            //     // console.log(aFaceW.value);
-            //     // console.log(aFaceH.value);
-            //     // console.log(aFaceX.value);
-            //     // console.log(aFaceY.value);
-            //     saveInputOnJs(Array.from(input)); // input is Float32Array
-            // }
-
             // Step 3: Draw white dots at each contour landmark position onto the input buffer.
             // This mirrors preprocess.py's draw_and_save_face_mesh() which uses white cv2 circles.
             // The face detector returns MLKit-style contours (a subset of the full 478-point mesh)
-            // which is why we retrain with the same subset — see DEVELOPMENT_GUIDE.md §3.
             const overlayPoints: { x: number; y: number }[] = [];
             const contours = face.contours as any;
 
@@ -491,7 +542,7 @@ export default function DrowsinessScreen() {
                 const contour = contours[key];
                 if (!contour) continue;
 
-                // Item 3: Match training radii — preprocess.py uses radius=2 for eye indices
+                // Match training radii — preprocess.py uses radius=2 for eye indices
                 // and radius=1 for all others. We use contour key as the eye proxy.
                 const dotRadius = isEyeContour(key)
                     ? EYE_CONTOUR_RADIUS
@@ -535,7 +586,10 @@ export default function DrowsinessScreen() {
             updateLandmarks(overlayPoints);
 
             // Save debug input when toggle is enabled
-            if (debugEnabledShared.value && frameCounter.value % DEBUG_SAVE_EVERY_N === 0) {
+            if (
+                debugEnabledShared.value &&
+                frameCounter.value % DEBUG_SAVE_EVERY_N === 0
+            ) {
                 saveInputOnJs(Array.from(input));
             }
 
@@ -576,9 +630,7 @@ export default function DrowsinessScreen() {
         return (
             <View style={styles.centered}>
                 <ActivityIndicator color="#93C5FD" size="large" />
-                <Text style={styles.statusText}>
-                    Loading model...
-                </Text>
+                <Text style={styles.statusText}>Loading model...</Text>
             </View>
         );
     }
@@ -595,7 +647,6 @@ export default function DrowsinessScreen() {
     }
 
     return (
-        // <View style={StyleSheet.absoluteFill}>
         <>
             <View
                 style={StyleSheet.absoluteFill}
@@ -608,42 +659,75 @@ export default function DrowsinessScreen() {
                     frameProcessor={frameProcessor}
                     style={StyleSheet.absoluteFill}
                     device={device}
-                    isActive={true}
+                    isActive={cameraIsActive}
                 />
 
                 <Svg style={StyleSheet.absoluteFill} width="100%" height="100%">
                     {landmarks.map((p, i) => (
-                        <Circle key={i} cx={p.x} cy={p.y} r={1.5} fill="rgba(173,216,230,0.85)" />
+                        <Circle
+                            key={i}
+                            cx={p.x}
+                            cy={p.y}
+                            r={1.5}
+                            fill="rgba(173,216,230,0.85)"
+                        />
                     ))}
                 </Svg>
 
-                {/* Tier 3 danger: full-screen pulsing red overlay */}
+                {/* Tier 3 overlay */}
                 {alertTier === 3 && (
                     <Animated.View
                         pointerEvents="none"
-                        style={[StyleSheet.absoluteFill, styles.dangerOverlay, { opacity: dangerOpacity }]}
+                        style={[
+                            StyleSheet.absoluteFill,
+                            styles.dangerOverlay,
+                            { opacity: dangerOpacity },
+                        ]}
                     />
                 )}
 
-                <View style={[
-                    styles.badge,
-                    alertTier >= 1 && styles.badgeWarning,
-                    alertTier >= 2 && styles.badgeCaution,
-                    alertTier >= 3 && styles.badgeDanger,
-                ]}>
+                <Pressable
+                    onPress={() => router.replace('/sensors/accelerometer-drowsiness' as any)}
+                    android_ripple={{ color: 'rgba(147, 197, 253, 0.3)' }}
+                    style={styles.switchModeBtn}
+                >
+                    <Text style={styles.switchModeText}>
+                        Accelerometer Detection ›
+                    </Text>
+                </Pressable>
+
+                <View
+                    style={[
+                        styles.badge,
+                        alertTier >= 1 && styles.badgeWarning,
+                        alertTier >= 2 && styles.badgeCaution,
+                        alertTier >= 3 && styles.badgeDanger,
+                    ]}
+                >
                     <Text style={styles.badgeTitle}>Driver State</Text>
-                    <Text style={[
-                        styles.badgeLabel,
-                        { color: prediction.label === 'Fatigue Subjects'
-                            ? (alertTier >= 2 ? '#FEF08A' : '#F87171')
-                            : '#93C5FD' }
-                    ]}>{prediction.label}</Text>
+                    <Text
+                        style={[
+                            styles.badgeLabel,
+                            {
+                                color:
+                                    prediction.label === 'Fatigue Subjects'
+                                        ? alertTier >= 2
+                                            ? '#FEF08A'
+                                            : '#F87171'
+                                        : '#93C5FD',
+                            },
+                        ]}
+                    >
+                        {prediction.label}
+                    </Text>
                     <View style={styles.badgeDivider} />
                     <Text style={styles.badgeScore}>
                         {prediction.score.toFixed(3)}
                     </Text>
                     <Text style={styles.badgeMeta}>
-                        {prediction.hasFace ? 'Face Detected (smoothed)' : 'No Face'}
+                        {prediction.hasFace
+                            ? 'Face Detected (smoothed)'
+                            : 'No Face'}
                     </Text>
                     {alertTier >= 1 && (
                         <Text style={styles.alertText}>
@@ -657,9 +741,17 @@ export default function DrowsinessScreen() {
                 <Pressable
                     onPress={() => setDebugEnabled((v) => !v)}
                     android_ripple={{ color: 'rgba(147, 197, 253, 0.3)' }}
-                    style={[styles.debugButton, debugEnabled && styles.debugButtonActive]}
+                    style={[
+                        styles.debugButton,
+                        debugEnabled && styles.debugButtonActive,
+                    ]}
                 >
-                    <Text style={[styles.debugButtonText, debugEnabled && styles.debugButtonTextActive]}>
+                    <Text
+                        style={[
+                            styles.debugButtonText,
+                            debugEnabled && styles.debugButtonTextActive,
+                        ]}
+                    >
                         {debugEnabled ? 'Debug: ON' : 'Debug: OFF'}
                     </Text>
                 </Pressable>
@@ -691,7 +783,7 @@ const styles = StyleSheet.create({
     },
     badge: {
         position: 'absolute',
-        top: 56,
+        top: 108,
         left: 16,
         right: 16,
         backgroundColor: 'rgba(15, 23, 42, 0.82)',
@@ -699,6 +791,26 @@ const styles = StyleSheet.create({
         borderRadius: 16,
         borderWidth: 1,
         borderColor: 'rgba(147, 197, 253, 0.2)',
+    },
+    switchModeBtn: {
+        position: 'absolute',
+        top: 56,
+        left: 16,
+        right: 16,
+        paddingVertical: 10,
+        paddingHorizontal: 14,
+        borderRadius: 10,
+        backgroundColor: 'rgba(30, 58, 138, 0.55)',
+        borderWidth: 1,
+        borderColor: 'rgba(147, 197, 253, 0.35)',
+        alignItems: 'center',
+    },
+    switchModeText: {
+        color: '#BFDBFE',
+        fontSize: 13,
+        fontWeight: '700',
+        letterSpacing: 1.1,
+        textTransform: 'uppercase',
     },
     badgeTitle: {
         color: '#94A3B8',
